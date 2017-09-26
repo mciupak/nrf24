@@ -1,0 +1,7 @@
+Todo:
+- opening and closing pipes via sysfs
+- improve switching in between RX and TX
+- improve handling of MAX_RT interrupt
+- find and fix bugs
+- code cleanup
+

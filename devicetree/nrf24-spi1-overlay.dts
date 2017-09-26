@@ -1,0 +1,49 @@
+// Definitions for NRF24
+/dts-v1/;
+/plugin/;
+
+/ {
+        compatible = "bcm,bcm2835", "bcm,bcm2708", "bcm,bcm2709";
+
+	fragment@0 {
+		target = <&spi1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			spidev@0 {
+				status = "disabled";
+			};
+
+			nrf1: nrf1@0 {
+				compatible = "nordic,nrf24";
+				reg = <0>; /* CS0 */
+				pinctrl-names = "default";
+				pinctrl-0 = <&nrf1_pins>;
+				interrupt-parent = <&gpio>;
+				interrupts = <17 0x2>; /* falling edge */
+				irq-gpio = <&gpio 17 0>;
+				ce-gpio = <&gpio 27 0>;
+				spi-max-frequency = <5000000>;
+				status = "okay";
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&gpio>;
+		__overlay__ {
+			nrf1_pins: nrf1_pins {
+				brcm,pins = <17 27>;
+				brcm,function = <0 1>; // in out
+			};
+		};
+	};
+
+	__overrides__ {
+		int_pin = <&nrf1>, "interrupts:0",
+		          <&nrf1_pins>, "brcm,pins:0";
+		speed   = <&nrf1>, "spi-max-frequency:0";
+	};
+};

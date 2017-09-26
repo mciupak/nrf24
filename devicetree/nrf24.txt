@@ -1,0 +1,1 @@
+scripts/dtc/dtc -@ -I dts -O dtb -o nrf24-spi0.dtbo nrf24-spi0-overlay.dts
