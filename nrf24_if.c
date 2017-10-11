@@ -83,6 +83,9 @@ struct nrf24_device {
 	wait_queue_head_t	tx_fifo_wait_queue;
 	wait_queue_head_t	tx_wait_queue;
 
+	struct task_struct	*rx_task_struct;
+	wait_queue_head_t	rx_wait_queue;
+
 	bool			tx_active;
 	bool			tx_done;
 	bool			tx_requested;
@@ -217,10 +220,11 @@ static ssize_t plw_store(struct device *dev,
 	if (old < 0)
 		return old;
 
-	if (old != new)
+	if (old != new) {
 		ret = nrf24_set_rx_pload_width(device->spi, pipe, new);
 		if (ret < 0)
 			return ret;
+	}
 
 	return count;
 }
@@ -1048,27 +1052,24 @@ static ssize_t nrf24_tx_thread(void *data)
 	}
 }
 
-static void nrf24_isr_work_handler_rx(struct nrf24_device *device)
+static ssize_t nrf24_rx_thread(void *data)
 {
+	struct nrf24_device *device = data;
 	ssize_t pipe;
 	ssize_t length;
 	u8 pload[PLOAD_MAX];
 	int ret;
 	ssize_t n;
-	ssize_t empty;
 	ssize_t plw;
 	struct nrf24_pipe *p;
 
-	empty = nrf24_is_rx_fifo_empty(device->spi);
-	if (empty < 0)
-		return;
+	while (true) {
 
-	if (empty) {
-		dev_warn(&device->dev, "%s: FIFO empty", __func__);
-		return;
-	}
-
-	while (!empty) {
+		wait_event_interruptible(device->rx_wait_queue,
+					 (!nrf24_is_rx_fifo_empty(device->spi) ||
+					  kthread_should_stop()));
+		if (kthread_should_stop())
+			return 0;
 
 		pipe = nrf24_get_rx_data_source(device->spi);
 		if (pipe < 0) {
@@ -1076,11 +1077,12 @@ static void nrf24_isr_work_handler_rx(struct nrf24_device *device)
 				 "%s: no datasource (err: %d)",
 				 __func__,
 				 pipe);
-			return;
+			continue;
 		}
+
 		if (pipe > N_NRF24_PIPES) {
 			dev_warn(&device->dev, "%s: pipe is TX!", __func__);
-			return;
+			continue;
 		}
 
 		p = device->pipes[pipe];
@@ -1091,7 +1093,7 @@ static void nrf24_isr_work_handler_rx(struct nrf24_device *device)
 				 "%s: get pload length failed (err: %d)",
 				 __func__,
 				 length);
-			return;
+			continue;
 		}
 
 		//check pipe's payload width
@@ -1100,7 +1102,7 @@ static void nrf24_isr_work_handler_rx(struct nrf24_device *device)
 			dev_warn(&device->dev,
 				 "get rx pload width failed (%d)",
 				 plw);
-			return;
+			continue;
 		}
 
 		memset(pload, 0, PLOAD_MAX);
@@ -1110,7 +1112,7 @@ static void nrf24_isr_work_handler_rx(struct nrf24_device *device)
 				 "%s: could not read pload (err = %d)",
 				 __func__,
 				 ret);
-			return;
+			continue;
 		}
 
 		if (!p->rx_active) {
@@ -1127,13 +1129,12 @@ static void nrf24_isr_work_handler_rx(struct nrf24_device *device)
 				p->rx_active = false;
 				wake_up_interruptible(&p->rx_wait_queue);
 			}
-
 		}
 
-		nrf24_clear_irq(device->spi, RX_DR);
-		empty = nrf24_is_rx_fifo_empty(device->spi);
-		if (empty < 0)
-			return;
+		if (!nrf24_is_rx_active(device) && device->tx_requested) {
+			dev_dbg(&device->dev, "wake up tx...");
+			wake_up_interruptible(&device->tx_fifo_wait_queue);
+		}
 	}
 }
 
@@ -1149,18 +1150,13 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 		return;
 
 	if (status & RX_DR) {
-
-		//dev_dbg(&device->dev, "%s: RX_DR", __func__);
-		nrf24_isr_work_handler_rx(device);
-		if (!nrf24_is_rx_active(device) && device->tx_requested) {
-			dev_dbg(&device->dev, "wake up tx...");
-			wake_up_interruptible(&device->tx_fifo_wait_queue);
-		}
+		dev_dbg(&device->dev, "%s: RX_DR", __func__);
+		nrf24_clear_irq(device->spi, RX_DR);
+		wake_up_interruptible(&device->rx_wait_queue);
 	}
 
 	if (status & TX_DS) {
-
-		//dev_dbg(&device->dev, "%s: TX_DS", __func__);
+		dev_dbg(&device->dev, "%s: TX_DS", __func__);
 		nrf24_clear_irq(device->spi, TX_DS);
 		device->tx_done = true;
 		wake_up_interruptible(&device->tx_wait_queue);
@@ -1168,14 +1164,12 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 	}
 
 	if (status & MAX_RT) {
-
 		nrf24_ce_lo(device);
 		dev_dbg(&device->dev,
 			"%s: MAX_RT, tx req: %d, rx act: %d",
 			__func__,
 			device->tx_requested,
 			nrf24_is_rx_active(device));
-		//nrf24_print_status(device->spi);
 		nrf24_clear_irq(device->spi, MAX_RT);
 		nrf24_reuse_tx_pl(device->spi);
 		nrf24_ce_hi(device);
@@ -1482,6 +1476,7 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 
 	init_waitqueue_head(&device->tx_fifo_wait_queue);
 	init_waitqueue_head(&device->tx_wait_queue);
+	init_waitqueue_head(&device->rx_wait_queue);
 
 	INIT_WORK(&device->isr_work, nrf24_isr_work_handler);
 	INIT_KFIFO(device->tx_fifo);
@@ -1624,6 +1619,16 @@ static int nrf24_probe(struct spi_device *spi)
 	ret = nrf24_hal_init(device);
 	if (ret < 0)
 		goto hal_init_err;
+
+	/* start rx thread */
+	device->rx_task_struct = kthread_run(nrf24_rx_thread,
+					     device,
+					     "nrf%d_rx_thread", device->id);
+	if (IS_ERR(device->rx_task_struct)) {
+		dev_err(&device->dev, "start of tx thread failed");
+		goto rx_thread_err;
+	}
+
 	/* start tx thread */
 	device->tx_task_struct = kthread_run(nrf24_tx_thread,
 					     device,
@@ -1649,6 +1654,8 @@ static int nrf24_probe(struct spi_device *spi)
 cdev_err:
 	kthread_stop(device->tx_task_struct);
 tx_thread_err:
+	kthread_stop(device->rx_task_struct);
+rx_thread_err:
 hal_init_err:
 device_err:
 	for (i--; i >= 0; --i) {
@@ -1671,6 +1678,7 @@ static int nrf24_remove(struct spi_device *spi)
 	nrf24_gpio_free(device);
 
 	kthread_stop(device->tx_task_struct);
+	kthread_stop(device->rx_task_struct);
 
 	nrf24_destroy_devices(device);
 
