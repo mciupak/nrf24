@@ -21,7 +21,7 @@
 
 #include "nrf24_hal.h"
 
-ssize_t nrf24_read_reg(struct spi_device *spi, u8 addr)
+static ssize_t nrf24_read_reg(struct spi_device *spi, u8 addr)
 {
 	ssize_t ret;
 
@@ -32,7 +32,8 @@ ssize_t nrf24_read_reg(struct spi_device *spi, u8 addr)
 
 	return ret;
 }
-ssize_t nrf24_write_reg(struct spi_device *spi, u8 addr, u8 val)
+
+static ssize_t nrf24_write_reg(struct spi_device *spi, u8 addr, u8 val)
 {
 	ssize_t ret;
 	u8 buffer[2];
@@ -57,9 +58,9 @@ ssize_t nrf24_write_reg(struct spi_device *spi, u8 addr, u8 val)
 	return ret;
 }
 
-ssize_t nrf24_write_multireg(struct spi_device *spi, u8 reg, u8 *buf, u8 length)
+static ssize_t nrf24_write_multireg(struct spi_device *spi, u8 reg, u8 *buf, u8 length)
 {
-	u8 buffer[length + 1];
+	u8 buffer[PLOAD_MAX + 1];
 
 	if (!length)
 		return -EINVAL;
@@ -86,7 +87,7 @@ ssize_t nrf24_write_multireg(struct spi_device *spi, u8 reg, u8 *buf, u8 length)
 	return spi_write(spi, buffer, length + 1);
 }
 
-ssize_t nrf24_read_multireg(struct spi_device *spi, u8 reg, u8 *buf)
+static ssize_t nrf24_read_multireg(struct spi_device *spi, u8 reg, u8 *buf)
 {
 	ssize_t ret;
 	u8 reg_addr;
@@ -132,37 +133,6 @@ ssize_t nrf24_read_multireg(struct spi_device *spi, u8 reg, u8 *buf)
 	return length;
 }
 
-ssize_t nrf24_get_ack_pl(struct spi_device *spi)
-{
-	ssize_t feature;
-
-	feature = nrf24_read_reg(spi, FEATURE);
-	if (feature < 0)
-		return feature;
-
-	return (feature & EN_DPL) == EN_ACK_PAY;
-}
-
-
-ssize_t nrf24_enable_ack_pl(struct spi_device *spi)
-{
-	ssize_t feature;
-
-	feature = nrf24_read_reg(spi, FEATURE);
-	if (feature < 0)
-		return feature;
-	return nrf24_write_reg(spi, FEATURE, feature | EN_ACK_PAY);
-}
-ssize_t nrf24_disable_ack_pl(struct spi_device *spi)
-{
-	ssize_t feature;
-
-	feature = nrf24_read_reg(spi, FEATURE);
-	if (feature < 0)
-		return feature;
-	return nrf24_write_reg(spi, FEATURE, feature & ~EN_ACK_PAY);
-}
-
 ssize_t nrf24_get_dynamic_pl(struct spi_device *spi)
 {
 	ssize_t feature;
@@ -174,7 +144,6 @@ ssize_t nrf24_get_dynamic_pl(struct spi_device *spi)
 	return (feature & EN_DPL) == EN_DPL;
 }
 
-
 ssize_t nrf24_enable_dynamic_pl(struct spi_device *spi)
 {
 	ssize_t feature;
@@ -184,6 +153,7 @@ ssize_t nrf24_enable_dynamic_pl(struct spi_device *spi)
 		return feature;
 	return nrf24_write_reg(spi, FEATURE, feature | EN_DPL);
 }
+
 ssize_t nrf24_disable_dynamic_pl(struct spi_device *spi)
 {
 	ssize_t feature;
@@ -194,7 +164,9 @@ ssize_t nrf24_disable_dynamic_pl(struct spi_device *spi)
 	return nrf24_write_reg(spi, FEATURE, feature & ~EN_DPL);
 }
 
-ssize_t nrf24_setup_dynamic_pl(struct spi_device *spi, u8 pipe, bool enable)
+static ssize_t nrf24_setup_dynamic_pl(struct spi_device *spi,
+				     u8 pipe,
+				     bool enable)
 {
 	ssize_t dynpd;
 	ssize_t ret;
@@ -244,7 +216,7 @@ ssize_t nrf24_setup_auto_ack(struct spi_device *spi, u8 pipe, bool enable)
 	return nrf24_write_reg(spi, EN_AA, aa);
 }
 
-ssize_t nrf24_enable_pipe(struct spi_device *spi, u8 pipe)
+static ssize_t nrf24_enable_pipe(struct spi_device *spi, u8 pipe)
 {
 	ssize_t rxaddr;
 
@@ -254,7 +226,7 @@ ssize_t nrf24_enable_pipe(struct spi_device *spi, u8 pipe)
 	return nrf24_write_reg(spi, EN_RXADDR, rxaddr | BIT(pipe));
 }
 
-ssize_t nrf24_disable_pipe(struct spi_device *spi, u8 pipe)
+static ssize_t nrf24_disable_pipe(struct spi_device *spi, u8 pipe)
 {
 	ssize_t rxaddr;
 

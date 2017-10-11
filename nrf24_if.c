@@ -1190,8 +1190,10 @@ static irqreturn_t nrf24_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static ssize_t
-nrf24_read(struct file *filp, char __user *buf, size_t size, loff_t *f_pos)
+static ssize_t nrf24_read(struct file *filp,
+			  char __user *buf,
+			  size_t size,
+			  loff_t *f_pos)
 {
 	struct nrf24_pipe *p;
 	ssize_t copied;
@@ -1208,8 +1210,10 @@ nrf24_read(struct file *filp, char __user *buf, size_t size, loff_t *f_pos)
 	return copied;
 }
 
-static ssize_t
-nrf24_write(struct file *filp, const char *buf, size_t size, loff_t *f_pos)
+static ssize_t nrf24_write(struct file *filp,
+			   const char __user *buf,
+			   size_t size,
+			   loff_t *f_pos)
 {
 	struct nrf24_device *device;
 	struct nrf24_pipe *p;
