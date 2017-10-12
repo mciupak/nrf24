@@ -1,0 +1,11 @@
+*.o
+*.cmd
+*.order
+*.symvers
+.tmp_versions/
+*.mod.c
+*.ko
+tags
+*.swp
+*.out
+*.dtbo
