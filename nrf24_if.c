@@ -33,11 +33,11 @@
 #include <linux/kfifo.h>
 #include <linux/wait.h>
 #include <linux/poll.h>
+#include <linux/list.h>
 
 #include "nrf24_hal.h"
 
 #define N_NRF24_MINORS                  BIT(MINORBITS)
-#define N_NRF24_PIPES			6
 #define FIFO_SIZE			65536
 
 static dev_t nrf24_dev;
@@ -49,19 +49,22 @@ static struct class *nrf24_class;
 struct nrf24_pipe_cfg {
 	u64			address;
 	bool			ack;
+	ssize_t			plw;
 };
 
 struct nrf24_pipe {
 	dev_t			devt;
 	struct device		*dev;
 	int			minor;
-	int			pipe;
+	int			id;
 	struct nrf24_pipe_cfg	cfg;
 
 	STRUCT_KFIFO_REC_1(FIFO_SIZE) rx_fifo;
-	wait_queue_head_t	rx_wait_queue;
+	wait_queue_head_t	poll_wait_queue;
 	bool			rx_active;
 	ssize_t			rx_size;
+
+	struct list_head list;
 };
 
 struct nrf24_device {
@@ -69,7 +72,7 @@ struct nrf24_device {
 	struct device		dev;
 	struct cdev		*cdev;
 	struct spi_device	*spi;
-	struct nrf24_pipe	*pipes[N_NRF24_PIPES];
+	struct list_head	pipes;
 
 	struct gpio_desc	*ce;
 	spinlock_t		lock;
@@ -86,7 +89,6 @@ struct nrf24_device {
 	struct task_struct	*rx_task_struct;
 	wait_queue_head_t	rx_wait_queue;
 
-	bool			tx_active;
 	bool			tx_done;
 	bool			tx_requested;
 	bool			rx_active;
@@ -94,12 +96,12 @@ struct nrf24_device {
 
 static bool nrf24_is_rx_active(struct nrf24_device *device)
 {
-	int i;
+	struct nrf24_pipe *pipe;
 
 	device->rx_active = false;
 
-	for (i = 0; i < N_NRF24_PIPES; i++)
-		device->rx_active |= device->pipes[i]->rx_active;
+	list_for_each_entry(pipe, &device->pipes, list)
+		device->rx_active |= pipe->rx_active;
 
 	return device->rx_active;
 }
@@ -116,16 +118,27 @@ static void nrf24_ce_lo(struct nrf24_device *device)
 
 #define to_nrf24_device(device)	container_of(device, struct nrf24_device, dev)
 
-static int nrf24_find_pipe_ptr(struct device *dev)
+static struct nrf24_pipe *nrf24_find_pipe_ptr(struct device *dev)
 {
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
-	int i;
+	struct nrf24_pipe *pipe;
 
-	for (i = 0; i < N_NRF24_PIPES; i++)
-		if (device->pipes[i]->dev == dev)
-			return i;
+	list_for_each_entry(pipe, &device->pipes, list)
+		if (pipe->dev == dev)
+			return pipe;
 
-	return -ENODEV;
+	return ERR_PTR(-ENODEV);
+}
+
+static struct nrf24_pipe *nrf24_find_pipe_id(struct nrf24_device *device, int id)
+{
+	struct nrf24_pipe *pipe;
+
+	list_for_each_entry(pipe, &device->pipes, list)
+		if (pipe->id == id)
+			return pipe;
+
+	return ERR_PTR(-ENODEV);
 }
 
 static ssize_t ack_show(struct device *dev,
@@ -134,14 +147,14 @@ static ssize_t ack_show(struct device *dev,
 {
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
 	int ret;
-	int pipe;
+	struct nrf24_pipe *pipe;
 
 
 	pipe = nrf24_find_pipe_ptr(dev);
-	if (pipe < 0)
-		return pipe;
+	if (IS_ERR(pipe))
+		return PTR_ERR(pipe);
 
-	ret = nrf24_get_auto_ack(device->spi, pipe);
+	ret = nrf24_get_auto_ack(device->spi, pipe->id);
 	if (ret < 0)
 		return ret;
 
@@ -155,13 +168,12 @@ static ssize_t ack_store(struct device *dev,
 {
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
 	int ret;
-	int pipe;
 	u8 new;
-
+	struct nrf24_pipe *pipe;
 
 	pipe = nrf24_find_pipe_ptr(dev);
-	if (pipe < 0)
-		return pipe;
+	if (IS_ERR(pipe))
+		return PTR_ERR(pipe);
 
 	ret = kstrtou8(buf, 10, &new);
 	if (ret < 0)
@@ -169,7 +181,7 @@ static ssize_t ack_store(struct device *dev,
 	if (new < 0 || new > 1)
 		return -EINVAL;
 
-	ret = nrf24_setup_auto_ack(device->spi, pipe, new);
+	ret = nrf24_setup_auto_ack(device->spi, pipe->id, new);
 	if (ret < 0)
 		return ret;
 
@@ -182,14 +194,13 @@ static ssize_t plw_show(struct device *dev,
 {
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
 	int ret;
-	int pipe;
-
+	struct nrf24_pipe *pipe;
 
 	pipe = nrf24_find_pipe_ptr(dev);
-	if (pipe < 0)
-		return pipe;
+	if (IS_ERR(pipe))
+		return PTR_ERR(pipe);
 
-	ret = nrf24_get_rx_pload_width(device->spi, pipe);
+	ret = nrf24_get_rx_pload_width(device->spi, pipe->id);
 	if (ret < 0)
 		return ret;
 
@@ -202,28 +213,30 @@ static ssize_t plw_store(struct device *dev,
 			 size_t count)
 {
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
-	int pipe;
 	int ret;
 	u8 new;
 	u8 old;
+	struct nrf24_pipe *pipe;
 
 	pipe = nrf24_find_pipe_ptr(dev);
-	if (pipe < 0)
-		return pipe;
+	if (IS_ERR(pipe))
+		return PTR_ERR(pipe);
+
 	ret = kstrtou8(buf, 10, &new);
 	if (ret < 0)
 		return ret;
 
 	if (new < 0 || new > PLOAD_MAX)
 		return -EINVAL;
-	old = nrf24_get_rx_pload_width(device->spi, pipe);
+	old = nrf24_get_rx_pload_width(device->spi, pipe->id);
 	if (old < 0)
 		return old;
 
 	if (old != new) {
-		ret = nrf24_set_rx_pload_width(device->spi, pipe, new);
+		ret = nrf24_set_rx_pload_width(device->spi, pipe->id, new);
 		if (ret < 0)
 			return ret;
+		pipe->cfg.plw = new;
 	}
 
 	return count;
@@ -234,16 +247,16 @@ static ssize_t address_show(struct device *dev,
 {
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
 	u8 addr[16];
-	int pipe;
 	int ret;
 	int count;
 	int i;
+	struct nrf24_pipe *pipe;
 
 	pipe = nrf24_find_pipe_ptr(dev);
-	if (pipe < 0)
-		return pipe;
+	if (IS_ERR(pipe))
+		return PTR_ERR(pipe);
 
-	ret = nrf24_get_address(device->spi, pipe, addr);
+	ret = nrf24_get_address(device->spi, pipe->id, addr);
 	if (ret < 0)
 		return ret;
 
@@ -261,10 +274,10 @@ static ssize_t address_store(struct device *dev,
 			     size_t count)
 {
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
-	int pipe;
 	int ret;
 	u64 address;
 	int len;
+	struct nrf24_pipe *pipe;
 
 	ret = kstrtoull(buf, 16, &address);
 	if (ret < 0)
@@ -278,10 +291,10 @@ static ssize_t address_store(struct device *dev,
 		return -EINVAL;
 
 	pipe = nrf24_find_pipe_ptr(dev);
-	if (pipe < 0)
-		return pipe;
+	if (IS_ERR(pipe))
+		return PTR_ERR(pipe);
 
-	ret = nrf24_set_address(device->spi, pipe, (u8 *)&address);
+	ret = nrf24_set_address(device->spi, pipe->id, (u8 *)&address);
 	if (ret < 0)
 		return ret;
 
@@ -814,28 +827,25 @@ static ssize_t nrf24_tx_thread(void *data)
 {
 	struct nrf24_device *device = data;
 	struct nrf24_pipe *p;
-	int len;
 	u8 pload[PLOAD_MAX];
 	int ret;
-	ssize_t plw;
-	ssize_t dpl;
 	ssize_t size;
 	ssize_t n;
 	ssize_t sent = 0;
 	u8 *buf;
+	bool spl;
+	bool dpl;
 
 	while (true) {
 		dev_dbg(&device->dev,
 			"%s: waiting for new messages",
 			__func__);
 		wait_event_interruptible(device->tx_fifo_wait_queue,
-					 (!kfifo_is_empty(&device->tx_fifo) ||
-					  kthread_should_stop()));
+					 kthread_should_stop() ||
+					 (!nrf24_is_rx_active(device) && !kfifo_is_empty(&device->tx_fifo)));
+
 		if (kthread_should_stop())
 			return 0;
-
-		//set active flag
-		device->tx_active = false;
 
 		//clear flag
 		device->tx_done = false;
@@ -847,7 +857,7 @@ static ssize_t nrf24_tx_thread(void *data)
 		//take address of pipe which is sending
 		ret = kfifo_out(&device->tx_fifo, &p, sizeof(p));
 		if (ret != sizeof(p)) {
-			dev_warn(&device->dev, "get pipe from fifo failed");
+			dev_dbg(&device->dev, "get pipe from fifo failed");
 			mutex_unlock(&device->tx_fifo_mutex);
 			continue;
 		}
@@ -855,7 +865,7 @@ static ssize_t nrf24_tx_thread(void *data)
 		//take out size of data
 		ret = kfifo_out(&device->tx_fifo, &size, sizeof(size));
 		if (ret != sizeof(size)) {
-			dev_warn(&device->dev, "get size from fifo failed");
+			dev_dbg(&device->dev, "get size from fifo failed");
 			mutex_unlock(&device->tx_fifo_mutex);
 			continue;
 		}
@@ -863,87 +873,32 @@ static ssize_t nrf24_tx_thread(void *data)
 		//alloc space for data
 		buf = kzalloc(size, GFP_KERNEL);
 		if (!buf) {
-			//unlock tx fifo
+			dev_dbg(&device->dev, "buf alloc failed");
 			mutex_unlock(&device->tx_fifo_mutex);
-			dev_warn(&device->dev, "buf alloc failed");
 			continue;
 		}
 
 		//take out size of data
 		ret = kfifo_out(&device->tx_fifo, buf, size);
 		if (ret != size) {
-			dev_warn(&device->dev, "get buf from fifo failed");
+			dev_dbg(&device->dev, "get buf from fifo failed");
 			mutex_unlock(&device->tx_fifo_mutex);
-			continue;
+			goto next;
 		}
 
 		//unlock tx fifo
 		mutex_unlock(&device->tx_fifo_mutex);
 
-		//if rx is active set tx_requested flag
-		device->tx_requested = nrf24_is_rx_active(device);
-		if (device->tx_requested)
-			dev_dbg(p->dev, "RX is active, waiting to finish...");
-		else
-			dev_dbg(p->dev, "RX NOT active, sending");
-
-
-		wait_event_interruptible(device->tx_fifo_wait_queue,
-					 (!nrf24_is_rx_active(device) ||
-					  kthread_should_stop()));
-		if (kthread_should_stop())
-			return 0;
-
-		if (device->tx_requested)
-			dev_dbg(p->dev, "RX done, sending...");
-
-		device->tx_requested = nrf24_is_rx_active(device);
-
 		//enter Standby-I mode
 		nrf24_ce_lo(device);
 
-		//set active flag
-		device->tx_active = true;
-
-		//check pipe's payload width
-		plw = nrf24_get_rx_pload_width(device->spi, p->pipe);
-		if (plw < 0) {
-			dev_warn(&device->dev,
-				 "get rx pload width failed (%d)",
-				 plw);
-			continue;
-		}
-		//check if pipe uses dynamic payload
-		if (plw) {
-			len = plw;
-			//check if dynamic payload is enabled
-			dpl = nrf24_get_dynamic_pl(device->spi);
-			if (dpl < 0) {
-				dev_warn(&device->dev,
-					 "get dpl failed (%d)",
-					 dpl);
-				continue;
-			}
-		} else {
-			len = PLOAD_MAX;
-			dpl = 0;
-		}
-
-		//disable dynamic payload
-		if (dpl) {
-			ret = nrf24_disable_dynamic_pl(device->spi);
-			if (ret < 0) {
-				dev_warn(&device->dev,
-					 "disable dpl failed (%d)",
-					 ret);
-				continue;
-			}
-		}
+		//clear tx requested flag
+		device->tx_requested = false;
 
 		//set TX MODE
 		ret = nrf24_set_mode(device->spi, NRF24_MODE_TX);
 		if (ret < 0)
-			continue;
+			goto next;
 
 		//set PIPE0 address
 		//this is needed to receive ACK
@@ -951,10 +906,8 @@ static ssize_t nrf24_tx_thread(void *data)
 					NRF24_PIPE0,
 					(u8 *)&p->cfg.address);
 		if (ret < 0) {
-			dev_warn(&device->dev,
-				 "set PIPE0 address failed (%d)",
-				 ret);
-			continue;
+			dev_dbg(&device->dev, "set PIPE0 address failed (%d)", ret);
+			goto next;
 		}
 
 		//set TX address
@@ -962,22 +915,35 @@ static ssize_t nrf24_tx_thread(void *data)
 					NRF24_TX,
 					(u8 *)&p->cfg.address);
 		if (ret < 0) {
-			dev_warn(&device->dev,
-				 "set TX address failed (%d)",
-				 ret);
-			continue;
+			dev_dbg(&device->dev, "set TX address failed (%d)", ret);
+			goto next;
 		}
+
+		//check if pipe uses static payload length
+		spl = p->cfg.plw != 0;
+
+		//check if dynamic payload length is enabled
+		dpl = nrf24_get_dynamic_pl(device->spi);
+
+		if (spl && dpl)
+			//disable dynamic payload if pipe
+			//does not use dynamic payload
+			//and dynamic paload is enabled
+			ret = nrf24_disable_dynamic_pl(device->spi);
+			if (ret < 0)
+				goto next;
 
 		memset(pload, 0, PLOAD_MAX);
 		memcpy(pload, &size, sizeof(size));
 
+		//calculate payload length
+		n = spl ? p->cfg.plw : sizeof(size);
+
 		//send size
-		nrf24_write_tx_pload(device->spi, pload, len);
+		nrf24_write_tx_pload(device->spi, pload, n);
 		if (ret < 0) {
-			dev_warn(&device->dev,
-				 "set TX PLOAD  failed (%d)",
-				 ret);
-			continue;
+			dev_dbg(&device->dev, "write TX PLOAD failed (%d)", ret);
+			goto next;
 		}
 
 		//enter TX MODE and start transmission
@@ -989,25 +955,32 @@ static ssize_t nrf24_tx_thread(void *data)
 					 kthread_should_stop()));
 
 		if (kthread_should_stop())
-			return 0;
+			goto abort;
 
 		//clear counter
 		sent = 0;
 
-		while (size > sent) {
+		while (size > 0) {
 
-			n = min_t(ssize_t, size - sent, len);
+			n = spl ? p->cfg.plw : min_t(ssize_t, size, PLOAD_MAX);
+
+			dev_dbg(&device->dev, "tx %d bytes", n);
+
 			memset(pload, 0, PLOAD_MAX);
 			memcpy(pload, buf + sent, n);
 
-			sent += n;
-
 			//write PLOAD to nRF FIFO
-			ret = nrf24_write_tx_pload(device->spi,
-					     pload,
-					     plw ? len : n);
-			if (ret < 0)
-				break;
+			ret = nrf24_write_tx_pload(device->spi, pload, n);
+
+			if (ret < 0) {
+				dev_dbg(&device->dev,
+					 "write TX PLOAD failed (%d)",
+					ret);
+				goto next;
+			}
+
+			sent += n;
+			size -= n;
 
 			device->tx_done = false;
 
@@ -1017,39 +990,42 @@ static ssize_t nrf24_tx_thread(void *data)
 						 kthread_should_stop()));
 
 			if (kthread_should_stop())
-				return 0;
+				goto abort;
 		}
-
+next:
 		//free data buffer
 		kfree(buf);
 
 		//restore dynamic payload feature
 		if (dpl)
-			ret = nrf24_enable_dynamic_pl(device->spi);
+			nrf24_enable_dynamic_pl(device->spi);
 
-		//if all send enter RX MODE
+		//if all sent enter RX MODE
 		if (kfifo_is_empty(&device->tx_fifo)) {
 
 			dev_dbg(&device->dev, "%s: NRF24_MODE_RX", __func__);
-			device->tx_active = false;
-
-			device->tx_done = false;
 
 			//enter Standby-I
 			nrf24_ce_lo(device);
 
-			//restore PIPE0 address
-			nrf24_set_address(device->spi,
-					  NRF24_PIPE0,
-					  (u8 *)&device->pipes[0]->cfg.address);
+			p = nrf24_find_pipe_id(device, NRF24_PIPE0);
+			if (!IS_ERR(p)) {
+				//restore PIPE0 address
+				nrf24_set_address(device->spi,
+						  p->id,
+						  (u8 *)&p->cfg.address);
+			}
 			//set RX MODE
 			nrf24_set_mode(device->spi, NRF24_MODE_RX);
 
-			//enter TX MODE and start receiving
+			//enter RX MODE and start receiving
 			nrf24_ce_hi(device);
 		}
-
 	}
+abort:
+	kfree(buf);
+
+	return 0;
 }
 
 static ssize_t nrf24_rx_thread(void *data)
@@ -1058,9 +1034,6 @@ static ssize_t nrf24_rx_thread(void *data)
 	ssize_t pipe;
 	ssize_t length;
 	u8 pload[PLOAD_MAX];
-	int ret;
-	ssize_t n;
-	ssize_t plw;
 	struct nrf24_pipe *p;
 
 	while (true) {
@@ -1073,66 +1046,54 @@ static ssize_t nrf24_rx_thread(void *data)
 
 		pipe = nrf24_get_rx_data_source(device->spi);
 		if (pipe < 0) {
-			dev_warn(&device->dev,
-				 "%s: no datasource (err: %d)",
-				 __func__,
-				 pipe);
+			dev_dbg(&device->dev,
+				"%s: get pipe failed (err: %d)",
+				__func__,
+				pipe);
 			continue;
 		}
 
-		if (pipe > N_NRF24_PIPES) {
-			dev_warn(&device->dev, "%s: pipe is TX!", __func__);
+		if (pipe > NRF24_PIPE5) {
+			dev_dbg(&device->dev, "%s: RX FIFO is empty!", __func__);
 			continue;
 		}
 
-		p = device->pipes[pipe];
-
-		length = nrf24_get_rx_pl_w(device->spi);
-		if (length < 0) {
-			dev_warn(&device->dev,
-				 "%s: get pload length failed (err: %d)",
-				 __func__,
-				 length);
+		p = nrf24_find_pipe_id(device, pipe);
+		if (IS_ERR(p))
 			continue;
-		}
-
-		//check pipe's payload width
-		plw = nrf24_get_rx_pload_width(device->spi, p->pipe);
-		if (plw < 0) {
-			dev_warn(&device->dev,
-				 "get rx pload width failed (%d)",
-				 plw);
-			continue;
-		}
 
 		memset(pload, 0, PLOAD_MAX);
-		ret = nrf24_read_rx_pload(device->spi, pload);
-		if (ret < 0) {
-			dev_warn(&device->dev,
-				 "%s: could not read pload (err = %d)",
-				 __func__,
-				 ret);
+		length = nrf24_read_rx_pload(device->spi, pload);
+		if (length < 0) {
+			dev_dbg(&device->dev,
+				"%s: could not read pload (err = %d)",
+				__func__,
+				length);
 			continue;
 		}
 
+		dev_dbg(p->dev, "rx %d bytes", length);
 		if (!p->rx_active) {
 			p->rx_active = true;
 			memcpy(&p->rx_size, pload, sizeof(p->rx_size));
-			dev_dbg(p->dev, "rx active");
+			dev_dbg(p->dev, "RX active");
 		} else {
-			if (p->rx_size < plw)
-				length = p->rx_size;
-			n = kfifo_in(&p->rx_fifo, &pload, length);
-			p->rx_size -= n;
-			if (p->rx_size <= 0) {
-				dev_dbg(p->dev, "rx done");
-				p->rx_active = false;
-				wake_up_interruptible(&p->rx_wait_queue);
+			//get length of remaining
+			length = p->rx_size < p->cfg.plw ? p->rx_size : length;
+
+			p->rx_size -= kfifo_in(&p->rx_fifo, &pload, length);
+
+			p->rx_active = p->rx_size > 0;
+
+			if (!p->rx_active) {
+				dev_dbg(p->dev, "RX done");
+				wake_up_interruptible(&p->poll_wait_queue);
 			}
 		}
 
+		//start tx if all rx done and tx requested during rctive rx
 		if (!nrf24_is_rx_active(device) && device->tx_requested) {
-			dev_dbg(&device->dev, "wake up tx...");
+			dev_dbg(&device->dev, "wake up TX...");
 			wake_up_interruptible(&device->tx_fifo_wait_queue);
 		}
 	}
@@ -1165,11 +1126,7 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 
 	if (status & MAX_RT) {
 		nrf24_ce_lo(device);
-		dev_dbg(&device->dev,
-			"%s: MAX_RT, tx req: %d, rx act: %d",
-			__func__,
-			device->tx_requested,
-			nrf24_is_rx_active(device));
+		dev_dbg(&device->dev, "%s: MAX_RT", __func__);
 		nrf24_clear_irq(device->spi, MAX_RT);
 		nrf24_reuse_tx_pl(device->spi);
 		nrf24_ce_hi(device);
@@ -1247,6 +1204,8 @@ static ssize_t nrf24_write(struct file *filp,
 
 	mutex_unlock(&device->tx_fifo_mutex);
 
+	device->tx_requested = true;
+
 	wake_up_interruptible(&device->tx_fifo_wait_queue);
 
 	return copied;
@@ -1292,7 +1251,7 @@ static unsigned int nrf24_poll(struct file *filp,
 	device = to_nrf24_device(p->dev->parent);
 
 	dev_dbg(p->dev, "%s: waiting...", __func__);
-	poll_wait(filp, &p->rx_wait_queue, wait);
+	poll_wait(filp, &p->poll_wait_queue, wait);
 	if (!kfifo_is_empty(&p->rx_fifo)) {
 		dev_dbg(p->dev, "%s: got data!", __func__);
 		return POLLIN | POLLRDNORM;
@@ -1321,56 +1280,56 @@ static void nrf24_free_minor(int minor)
 
 static void nrf24_destroy_devices(struct nrf24_device *device)
 {
-	int i;
+	struct nrf24_pipe *pipe, *temp;
 
-	for (i = 0; i < N_NRF24_PIPES; i++) {
-		device_destroy(nrf24_class, device->pipes[i]->devt);
-		nrf24_free_minor(device->pipes[i]->minor);
-		kfree(device->pipes[i]);
+	list_for_each_entry_safe(pipe, temp, &device->pipes, list) {
+		device_destroy(nrf24_class, pipe->devt);
+		nrf24_free_minor(pipe->minor);
+		list_del(&pipe->list);
+		kfree(pipe);
 	}
 }
 
-static int nrf24_create_device(struct nrf24_device *device, int i)
+static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 {
 	int ret;
 	char name[16];
+	struct nrf24_pipe *p;
 
 	//sets flags to false as well
-	device->pipes[i] = kzalloc(sizeof(*device->pipes[i]), GFP_KERNEL);
-	if (!device->pipes[i]) {
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	if (!p) {
 		ret = -ENOMEM;
 		goto error_alloc;
 	}
 
-	ret = nrf24_get_minor(device->pipes[i]);
+	ret = nrf24_get_minor(p);
 	if (ret < 0) {
 		dev_err(&device->dev, "%s: get_minor failed", __func__);
 		goto error_minor;
 	}
 
-	device->pipes[i]->minor = ret;
-	device->pipes[i]->pipe = i;
-	INIT_KFIFO(device->pipes[i]->rx_fifo);
-	init_waitqueue_head(&device->pipes[i]->rx_wait_queue);
+	p->minor = ret;
+	p->id = id;
+	INIT_KFIFO(p->rx_fifo);
+	init_waitqueue_head(&p->poll_wait_queue);
 
-	snprintf(name, sizeof(name), "%s.%d", dev_name(&device->dev), i);
-	device->pipes[i]->devt = MKDEV(MAJOR(nrf24_dev),
-				       device->pipes[i]->minor);
+	snprintf(name, sizeof(name), "%s.%d", dev_name(&device->dev), id);
+	p->devt = MKDEV(MAJOR(nrf24_dev), p->minor);
 
-	device->pipes[i]->dev = device_create_with_groups(
-					nrf24_class,
-					&device->dev,
-					device->pipes[i]->devt,
-					device->pipes[i],
-					nrf24_pipe_groups,
-					name);
+	p->dev = device_create_with_groups(nrf24_class,
+					   &device->dev,
+					   p->devt,
+					   p,
+					   nrf24_pipe_groups,
+					   name);
 
-	if (IS_ERR(device->pipes[i]->dev)) {
+	if (IS_ERR(p->dev)) {
 		dev_err(&device->dev,
 			"%s: device_create of '%s' failed",
 			__func__,
 			name);
-		ret = PTR_ERR(device->pipes[i]->dev);
+		ret = PTR_ERR(p->dev);
 		goto error_device;
 	}
 
@@ -1378,16 +1337,15 @@ static int nrf24_create_device(struct nrf24_device *device, int i)
 		"%s: device created: major(%d), minor(%d)",
 		__func__,
 		MAJOR(nrf24_dev),
-		device->pipes[i]->minor
-		);
+		p->minor);
 
-	return 0;
+	return p;
 error_device:
-	nrf24_free_minor(device->pipes[i]->minor);
+	nrf24_free_minor(p->minor);
 error_minor:
-	kfree(device->pipes[i]);
+	kfree(p);
 error_alloc:
-	return ret;
+	return ERR_PTR(ret);
 }
 
 static void nrf24_gpio_free(struct nrf24_device *device)
@@ -1493,32 +1451,35 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 static int nrf24_hal_init(struct nrf24_device *device)
 {
 	int ret;
-	int i;
 	struct spi_device *spi = device->spi;
-
+	struct nrf24_pipe *pipe;
 
 	ret = nrf24_soft_reset(spi);
 	if (ret < 0)
 		return ret;
 
-	for (i = 0; i < N_NRF24_PIPES; i++) {
+
+	list_for_each_entry(pipe, &device->pipes, list) {
 		ret = nrf24_get_address(spi,
-					i,
-					(u8 *)&device->pipes[i]->cfg.address);
+					pipe->id,
+					(u8 *)&pipe->cfg.address);
 		if (ret < 0)
 			return ret;
-		ret = nrf24_get_auto_ack(spi, i);
+		ret = nrf24_get_auto_ack(spi, pipe->id);
 		if (ret < 0)
 			return ret;
-		device->pipes[i]->cfg.ack = ret;
+		pipe->cfg.ack = ret;
+
+		//0 -> dynamic pload
+		pipe->cfg.plw = 0;
+		ret = nrf24_set_rx_pload_width(spi, pipe->id, 0);
+		if (ret < 0)
+			return ret;
 	}
 
 	ret = nrf24_flush_fifo(spi);
 	if (ret < 0)
 		return ret;
-	//ret = nrf24_close_pipe(spi, NRF24_PIPE_ALL);
-	//if (ret < 0)
-	//	return ret;
 	ret = nrf24_open_pipe(spi, NRF24_PIPE_ALL);
 	if (ret < 0)
 		return ret;
@@ -1526,30 +1487,6 @@ static int nrf24_hal_init(struct nrf24_device *device)
 	if (ret < 0)
 		return ret;
 	ret = nrf24_set_mode(spi, NRF24_MODE_RX);
-	if (ret < 0)
-		return ret;
-	//0 -> dynamic pload
-	ret = nrf24_set_rx_pload_width(spi, NRF24_PIPE0, 0);
-	if (ret < 0)
-		return ret;
-	//0 -> dynamic pload
-	ret = nrf24_set_rx_pload_width(spi, NRF24_PIPE1, 0);
-	if (ret < 0)
-		return ret;
-	//0 -> dynamic pload
-	ret = nrf24_set_rx_pload_width(spi, NRF24_PIPE2, 0);
-	if (ret < 0)
-		return ret;
-	//0 -> dynamic pload
-	ret = nrf24_set_rx_pload_width(spi, NRF24_PIPE3, 0);
-	if (ret < 0)
-		return ret;
-	//0 -> dynamic pload
-	ret = nrf24_set_rx_pload_width(spi, NRF24_PIPE4, 0);
-	if (ret < 0)
-		return ret;
-	//0 -> dynamic pload
-	ret = nrf24_set_rx_pload_width(spi, NRF24_PIPE5, 0);
 	if (ret < 0)
 		return ret;
 	ret = nrf24_set_crc_mode(spi, NRF24_CRC_16BIT);
@@ -1591,6 +1528,7 @@ static int nrf24_probe(struct spi_device *spi)
 {
 	int ret;
 	struct nrf24_device *device;
+	struct nrf24_pipe *pipe;
 	int i;
 
 	spi->mode = SPI_MODE_0;
@@ -1614,10 +1552,15 @@ static int nrf24_probe(struct spi_device *spi)
 		goto gpio_setup_err;
 	}
 
-	for (i = 0; i < N_NRF24_PIPES; i++) {
-		ret = nrf24_create_device(device, i);
-		if (ret < 0)
+	INIT_LIST_HEAD(&device->pipes);
+
+	for (i = 0; i <= NRF24_PIPE5; i++) {
+		pipe = nrf24_create_pipe(device, i);
+		if (IS_ERR(pipe)) {
+			ret = PTR_ERR(pipe);
 			goto device_err;
+		}
+		list_add(&pipe->list, &device->pipes);
 	}
 
 	ret = nrf24_hal_init(device);
@@ -1627,7 +1570,8 @@ static int nrf24_probe(struct spi_device *spi)
 	/* start rx thread */
 	device->rx_task_struct = kthread_run(nrf24_rx_thread,
 					     device,
-					     "nrf%d_rx_thread", device->id);
+					     "nrf%d_rx_thread",
+					     device->id);
 	if (IS_ERR(device->rx_task_struct)) {
 		dev_err(&device->dev, "start of tx thread failed");
 		goto rx_thread_err;
@@ -1636,7 +1580,8 @@ static int nrf24_probe(struct spi_device *spi)
 	/* start tx thread */
 	device->tx_task_struct = kthread_run(nrf24_tx_thread,
 					     device,
-					     "nrf%d_tx_thread", device->id);
+					     "nrf%d_tx_thread",
+					     device->id);
 	if (IS_ERR(device->tx_task_struct)) {
 		dev_err(&device->dev, "start of tx thread failed");
 		goto tx_thread_err;
@@ -1662,11 +1607,7 @@ tx_thread_err:
 rx_thread_err:
 hal_init_err:
 device_err:
-	for (i--; i >= 0; --i) {
-		device_destroy(nrf24_class, device->pipes[i]->devt);
-		nrf24_free_minor(device->pipes[i]->minor);
-		kfree(device->pipes[i]);
-	}
+	nrf24_destroy_devices(device);
 	nrf24_gpio_free(device);
 gpio_setup_err:
 	device_unregister(&device->dev);
