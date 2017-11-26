@@ -55,6 +55,7 @@ struct nrf24_pipe_cfg {
 struct nrf24_pipe {
 	dev_t			devt;
 	struct device		*dev;
+	struct cdev		cdev;
 	int			minor;
 	int			id;
 	struct nrf24_pipe_cfg	cfg;
@@ -70,7 +71,6 @@ struct nrf24_pipe {
 struct nrf24_device {
 	u32			id;
 	struct device		dev;
-	struct cdev		*cdev;
 	struct spi_device	*spi;
 	struct list_head	pipes;
 
@@ -1217,11 +1217,15 @@ error:
 
 static int nrf24_open(struct inode *inode, struct file *filp)
 {
-	struct nrf24_pipee *pipe;
+	struct nrf24_pipe *pipe;
 
-	mutex_lock(&minor_mutex);
-	pipe = idr_find(&nrf24_idr, iminor(inode));
-	mutex_unlock(&minor_mutex);
+	pipe = container_of(inode->i_cdev, struct nrf24_pipe, cdev);
+	pr_info("device: minor %d\n", iminor(inode));
+
+	pr_info("device: minor %d\n", pipe->minor);
+	//mutex_lock(&minor_mutex);
+	//pipe = idr_find(&nrf24_idr, iminor(inode));
+	//mutex_unlock(&minor_mutex);
 
 	if (!pipe) {
 		pr_err("device: minor %d unknown.\n", iminor(inode));
@@ -1283,6 +1287,7 @@ static void nrf24_destroy_devices(struct nrf24_device *device)
 	struct nrf24_pipe *pipe, *temp;
 
 	list_for_each_entry_safe(pipe, temp, &device->pipes, list) {
+		cdev_del(&pipe->cdev);
 		device_destroy(nrf24_class, pipe->devt);
 		nrf24_free_minor(pipe->minor);
 		list_del(&pipe->list);
@@ -1290,10 +1295,19 @@ static void nrf24_destroy_devices(struct nrf24_device *device)
 	}
 }
 
+static const struct file_operations nrf24_fops = {
+	.owner = THIS_MODULE,
+	.open = nrf24_open,
+	.release = nrf24_release,
+	.read = nrf24_read,
+	.write = nrf24_write,
+	.llseek = no_llseek,
+	.poll = nrf24_poll,
+};
+
 static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 {
 	int ret;
-	char name[16];
 	struct nrf24_pipe *p;
 
 	//sets flags to false as well
@@ -1314,7 +1328,6 @@ static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 	INIT_KFIFO(p->rx_fifo);
 	init_waitqueue_head(&p->poll_wait_queue);
 
-	snprintf(name, sizeof(name), "%s.%d", dev_name(&device->dev), id);
 	p->devt = MKDEV(MAJOR(nrf24_dev), p->minor);
 
 	p->dev = device_create_with_groups(nrf24_class,
@@ -1322,15 +1335,25 @@ static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 					   p->devt,
 					   p,
 					   nrf24_pipe_groups,
-					   name);
+					   "%s.%d",
+					   dev_name(&device->dev),
+					   id);
 
 	if (IS_ERR(p->dev)) {
 		dev_err(&device->dev,
 			"%s: device_create of '%s' failed",
 			__func__,
-			name);
+			dev_name(p->dev));
 		ret = PTR_ERR(p->dev);
 		goto error_device;
+	}
+
+	cdev_init(&p->cdev, &nrf24_fops);
+	p->cdev.owner = THIS_MODULE;
+	ret = cdev_add(&p->cdev, p->devt, 1);
+	if (ret < 0) {
+		dev_err(&device->dev, "%s: cdev failed", __func__);
+		goto cdev_err;
 	}
 
 	dev_dbg(&device->dev,
@@ -1340,6 +1363,9 @@ static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 		p->minor);
 
 	return p;
+
+cdev_err:
+	device_destroy(nrf24_class, p->devt);
 error_device:
 	nrf24_free_minor(p->minor);
 error_minor:
@@ -1514,16 +1540,6 @@ static int nrf24_hal_init(struct nrf24_device *device)
 
 }
 
-static const struct file_operations nrf24_fops = {
-	.owner = THIS_MODULE,
-	.open = nrf24_open,
-	.release = nrf24_release,
-	.read = nrf24_read,
-	.write = nrf24_write,
-	.llseek = no_llseek,
-	.poll = nrf24_poll,
-};
-
 static int nrf24_probe(struct spi_device *spi)
 {
 	int ret;
@@ -1587,21 +1603,11 @@ static int nrf24_probe(struct spi_device *spi)
 		goto tx_thread_err;
 	}
 
-	device->cdev = cdev_alloc();
-	device->cdev->owner = THIS_MODULE;
-	cdev_init(device->cdev, &nrf24_fops);
-	ret = cdev_add(device->cdev, nrf24_dev, N_NRF24_MINORS);
-	if (ret < 0) {
-		dev_err(&device->dev, "%s: cdev failed", __func__);
-		goto cdev_err;
-	}
 
 	spi_set_drvdata(spi, device);
 
 	return 0;
 
-cdev_err:
-	kthread_stop(device->tx_task_struct);
 tx_thread_err:
 	kthread_stop(device->rx_task_struct);
 rx_thread_err:
@@ -1618,7 +1624,6 @@ static int nrf24_remove(struct spi_device *spi)
 {
 	struct nrf24_device *device = spi_get_drvdata(spi);
 
-	cdev_del(device->cdev);
 
 	nrf24_gpio_free(device);
 
