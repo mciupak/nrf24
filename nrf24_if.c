@@ -41,9 +41,8 @@
 #define FIFO_SIZE			65536
 
 static dev_t nrf24_dev;
-static DEFINE_IDR(nrf24_idr);
-static DEFINE_IDA(nrf24_ida);
-static DEFINE_MUTEX(minor_mutex);
+static DEFINE_IDA(nrf24_ida_pipe);
+static DEFINE_IDA(nrf24_ida_dev);
 static struct class *nrf24_class;
 
 struct nrf24_pipe_cfg {
@@ -55,7 +54,7 @@ struct nrf24_pipe_cfg {
 struct nrf24_pipe {
 	dev_t			devt;
 	struct device		*dev;
-	int			minor;
+	struct cdev		cdev;
 	int			id;
 	struct nrf24_pipe_cfg	cfg;
 
@@ -70,7 +69,6 @@ struct nrf24_pipe {
 struct nrf24_device {
 	u32			id;
 	struct device		dev;
-	struct cdev		*cdev;
 	struct spi_device	*spi;
 	struct list_head	pipes;
 
@@ -91,19 +89,18 @@ struct nrf24_device {
 
 	bool			tx_done;
 	bool			tx_requested;
-	bool			rx_active;
 };
 
 static bool nrf24_is_rx_active(struct nrf24_device *device)
 {
 	struct nrf24_pipe *pipe;
 
-	device->rx_active = false;
+	bool active = false;
 
 	list_for_each_entry(pipe, &device->pipes, list)
-		device->rx_active |= pipe->rx_active;
+		active |= pipe->rx_active;
 
-	return device->rx_active;
+	return active;
 }
 
 static void nrf24_ce_hi(struct nrf24_device *device)
@@ -1217,11 +1214,9 @@ error:
 
 static int nrf24_open(struct inode *inode, struct file *filp)
 {
-	struct nrf24_pipee *pipe;
+	struct nrf24_pipe *pipe;
 
-	mutex_lock(&minor_mutex);
-	pipe = idr_find(&nrf24_idr, iminor(inode));
-	mutex_unlock(&minor_mutex);
+	pipe = container_of(inode->i_cdev, struct nrf24_pipe, cdev);
 
 	if (!pipe) {
 		pr_err("device: minor %d unknown.\n", iminor(inode));
@@ -1260,40 +1255,32 @@ static unsigned int nrf24_poll(struct file *filp,
 	return 0;
 }
 
-static int nrf24_get_minor(struct nrf24_pipe *pipe)
-{
-	int ret;
-
-	mutex_lock(&minor_mutex);
-	ret = idr_alloc(&nrf24_idr, pipe, 0, N_NRF24_MINORS, GFP_KERNEL);
-	mutex_unlock(&minor_mutex);
-
-	return ret;
-}
-
-static void nrf24_free_minor(int minor)
-{
-	mutex_lock(&minor_mutex);
-	idr_remove(&nrf24_idr, minor);
-	mutex_unlock(&minor_mutex);
-}
-
 static void nrf24_destroy_devices(struct nrf24_device *device)
 {
 	struct nrf24_pipe *pipe, *temp;
 
 	list_for_each_entry_safe(pipe, temp, &device->pipes, list) {
+		cdev_del(&pipe->cdev);
 		device_destroy(nrf24_class, pipe->devt);
-		nrf24_free_minor(pipe->minor);
+		ida_simple_remove(&nrf24_ida_pipe, MINOR(pipe->devt));
 		list_del(&pipe->list);
 		kfree(pipe);
 	}
 }
 
+static const struct file_operations nrf24_fops = {
+	.owner = THIS_MODULE,
+	.open = nrf24_open,
+	.release = nrf24_release,
+	.read = nrf24_read,
+	.write = nrf24_write,
+	.llseek = no_llseek,
+	.poll = nrf24_poll,
+};
+
 static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 {
 	int ret;
-	char name[16];
 	struct nrf24_pipe *p;
 
 	//sets flags to false as well
@@ -1303,45 +1290,57 @@ static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 		goto error_alloc;
 	}
 
-	ret = nrf24_get_minor(p);
+	ret = ida_simple_get(&nrf24_ida_pipe, 0, 0, GFP_KERNEL);
 	if (ret < 0) {
 		dev_err(&device->dev, "%s: get_minor failed", __func__);
 		goto error_minor;
 	}
 
-	p->minor = ret;
+	p->devt = MKDEV(MAJOR(nrf24_dev), ret);
 	p->id = id;
+
 	INIT_KFIFO(p->rx_fifo);
 	init_waitqueue_head(&p->poll_wait_queue);
 
-	snprintf(name, sizeof(name), "%s.%d", dev_name(&device->dev), id);
-	p->devt = MKDEV(MAJOR(nrf24_dev), p->minor);
 
 	p->dev = device_create_with_groups(nrf24_class,
 					   &device->dev,
 					   p->devt,
 					   p,
 					   nrf24_pipe_groups,
-					   name);
+					   "%s.%d",
+					   dev_name(&device->dev),
+					   id);
 
 	if (IS_ERR(p->dev)) {
 		dev_err(&device->dev,
 			"%s: device_create of '%s' failed",
 			__func__,
-			name);
+			dev_name(p->dev));
 		ret = PTR_ERR(p->dev);
 		goto error_device;
+	}
+
+	cdev_init(&p->cdev, &nrf24_fops);
+	p->cdev.owner = THIS_MODULE;
+	ret = cdev_add(&p->cdev, p->devt, 1);
+	if (ret < 0) {
+		dev_err(&device->dev, "%s: cdev failed", __func__);
+		goto cdev_err;
 	}
 
 	dev_dbg(&device->dev,
 		"%s: device created: major(%d), minor(%d)",
 		__func__,
-		MAJOR(nrf24_dev),
-		p->minor);
+		MAJOR(p->devt),
+		MINOR(p->devt));
 
 	return p;
+
+cdev_err:
+	device_destroy(nrf24_class, p->devt);
 error_device:
-	nrf24_free_minor(p->minor);
+	ida_simple_remove(&nrf24_ida_pipe, MINOR(p->devt));
 error_minor:
 	kfree(p);
 error_alloc:
@@ -1397,7 +1396,7 @@ static void nrf24_dev_release(struct device *dev)
 {
 	struct nrf24_device *device = to_nrf24_device(dev);
 
-	ida_simple_remove(&nrf24_ida, device->id);
+	ida_simple_remove(&nrf24_ida_dev, device->id);
 	kfree(device);
 }
 
@@ -1412,14 +1411,14 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 	struct nrf24_device *device;
 	int id;
 
-	id = ida_simple_get(&nrf24_ida, 0, 0, GFP_KERNEL);
+	id = ida_simple_get(&nrf24_ida_dev, 0, 0, GFP_KERNEL);
 	if (id < 0)
 		return ERR_PTR(id);
 
 	//sets flags to false as well
 	device = kzalloc(sizeof(*device), GFP_KERNEL);
 	if (!device) {
-		ida_simple_remove(&nrf24_ida, id);
+		ida_simple_remove(&nrf24_ida_dev, id);
 		return ERR_PTR(-ENOMEM);
 	}
 	device->spi = spi;
@@ -1514,16 +1513,6 @@ static int nrf24_hal_init(struct nrf24_device *device)
 
 }
 
-static const struct file_operations nrf24_fops = {
-	.owner = THIS_MODULE,
-	.open = nrf24_open,
-	.release = nrf24_release,
-	.read = nrf24_read,
-	.write = nrf24_write,
-	.llseek = no_llseek,
-	.poll = nrf24_poll,
-};
-
 static int nrf24_probe(struct spi_device *spi)
 {
 	int ret;
@@ -1587,21 +1576,11 @@ static int nrf24_probe(struct spi_device *spi)
 		goto tx_thread_err;
 	}
 
-	device->cdev = cdev_alloc();
-	device->cdev->owner = THIS_MODULE;
-	cdev_init(device->cdev, &nrf24_fops);
-	ret = cdev_add(device->cdev, nrf24_dev, N_NRF24_MINORS);
-	if (ret < 0) {
-		dev_err(&device->dev, "%s: cdev failed", __func__);
-		goto cdev_err;
-	}
 
 	spi_set_drvdata(spi, device);
 
 	return 0;
 
-cdev_err:
-	kthread_stop(device->tx_task_struct);
 tx_thread_err:
 	kthread_stop(device->rx_task_struct);
 rx_thread_err:
@@ -1618,7 +1597,6 @@ static int nrf24_remove(struct spi_device *spi)
 {
 	struct nrf24_device *device = spi_get_drvdata(spi);
 
-	cdev_del(device->cdev);
 
 	nrf24_gpio_free(device);
 
@@ -1659,25 +1637,32 @@ static int __init nrf24_init(void)
 				  nrf24_spi_driver.driver.name);
 	if (ret < 0) {
 		pr_err("Unable to alloc chrdev region");
-		return ret;
+		goto chrdev_err;
 	}
 
 	nrf24_class = class_create(THIS_MODULE, nrf24_spi_driver.driver.name);
 	if (IS_ERR(nrf24_class)) {
 		pr_err("Unable to create class");
-		unregister_chrdev(MAJOR(nrf24_dev),
-				  nrf24_spi_driver.driver.name);
-		return PTR_ERR(nrf24_class);
+		ret = PTR_ERR(nrf24_class);
+		goto class_err;
 	}
 
 	ret = spi_register_driver(&nrf24_spi_driver);
 	if (ret < 0) {
-		pr_err("spi_register_driver error");
-		class_destroy(nrf24_class);
-		unregister_chrdev(MAJOR(nrf24_dev),
-				  nrf24_spi_driver.driver.name);
-		ida_destroy(&nrf24_ida);
+		pr_err("Unable to register spi driver");
+		goto spi_err;
 	}
+
+	return 0;
+
+spi_err:
+	class_destroy(nrf24_class);
+class_err:
+	unregister_chrdev(MAJOR(nrf24_dev), nrf24_spi_driver.driver.name);
+chrdev_err:
+	ida_destroy(&nrf24_ida_dev);
+	ida_destroy(&nrf24_ida_pipe);
+
 	return ret;
 }
 module_init(nrf24_init);
@@ -1687,7 +1672,8 @@ static void __exit nrf24_exit(void)
 	spi_unregister_driver(&nrf24_spi_driver);
 	class_destroy(nrf24_class);
 	unregister_chrdev(MAJOR(nrf24_dev), nrf24_spi_driver.driver.name);
-	ida_destroy(&nrf24_ida);
+	ida_destroy(&nrf24_ida_dev);
+	ida_destroy(&nrf24_ida_pipe);
 }
 module_exit(nrf24_exit);
 
