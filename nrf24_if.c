@@ -88,7 +88,6 @@ struct nrf24_device {
 	wait_queue_head_t	rx_wait_queue;
 
 	bool			tx_done;
-	bool			tx_requested;
 };
 
 static bool nrf24_is_rx_active(struct nrf24_device *device)
@@ -889,9 +888,6 @@ static ssize_t nrf24_tx_thread(void *data)
 		//enter Standby-I mode
 		nrf24_ce_lo(device);
 
-		//clear tx requested flag
-		device->tx_requested = false;
-
 		//set TX MODE
 		ret = nrf24_set_mode(device->spi, NRF24_MODE_TX);
 		if (ret < 0)
@@ -1089,7 +1085,7 @@ static ssize_t nrf24_rx_thread(void *data)
 		}
 
 		//start tx if all rx done and tx requested during rctive rx
-		if (!nrf24_is_rx_active(device) && device->tx_requested) {
+		if (!nrf24_is_rx_active(device) && !kfifo_is_empty(&device->tx_fifo)) {
 			dev_dbg(&device->dev, "wake up TX...");
 			wake_up_interruptible(&device->tx_wait_queue);
 		}
@@ -1200,8 +1196,6 @@ static ssize_t nrf24_write(struct file *filp,
 		goto error;
 
 	mutex_unlock(&device->tx_fifo_mutex);
-
-	device->tx_requested = true;
 
 	wake_up_interruptible(&device->tx_wait_queue);
 
