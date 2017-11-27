@@ -60,7 +60,6 @@ struct nrf24_pipe {
 
 	STRUCT_KFIFO_REC_1(FIFO_SIZE) rx_fifo;
 	wait_queue_head_t	poll_wait_queue;
-	bool			rx_active;
 	ssize_t			rx_size;
 
 	struct list_head list;
@@ -97,7 +96,7 @@ static bool nrf24_is_rx_active(struct nrf24_device *device)
 	bool active = false;
 
 	list_for_each_entry(pipe, &device->pipes, list)
-		active |= pipe->rx_active;
+		active |= pipe->rx_size > 0;
 
 	return active;
 }
@@ -1066,8 +1065,7 @@ static ssize_t nrf24_rx_thread(void *data)
 		}
 
 		dev_dbg(p->dev, "rx %d bytes", length);
-		if (!p->rx_active) {
-			p->rx_active = true;
+		if (p->rx_size > 0) {
 			memcpy(&p->rx_size, pload, sizeof(p->rx_size));
 			dev_dbg(p->dev, "RX active");
 		} else {
@@ -1076,9 +1074,7 @@ static ssize_t nrf24_rx_thread(void *data)
 
 			p->rx_size -= kfifo_in(&p->rx_fifo, &pload, length);
 
-			p->rx_active = p->rx_size > 0;
-
-			if (!p->rx_active) {
+			if (p->rx_size <= 0) {
 				dev_dbg(p->dev, "RX done");
 				wake_up_interruptible(&p->poll_wait_queue);
 			}
@@ -1438,6 +1434,8 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 	spin_lock_init(&device->lock);
 	mutex_init(&device->tx_fifo_mutex);
 
+	INIT_LIST_HEAD(&device->pipes);
+
 	return device;
 }
 
@@ -1535,7 +1533,6 @@ static int nrf24_probe(struct spi_device *spi)
 		goto gpio_setup_err;
 	}
 
-	INIT_LIST_HEAD(&device->pipes);
 
 	for (i = 0; i <= NRF24_PIPE5; i++) {
 		pipe = nrf24_create_pipe(device, i);
