@@ -81,7 +81,7 @@ struct nrf24_device {
 	STRUCT_KFIFO_REC_2(FIFO_SIZE) tx_fifo;
 	struct mutex		tx_fifo_mutex;
 	struct task_struct	*tx_task_struct;
-	wait_queue_head_t	tx_fifo_wait_queue;
+	wait_queue_head_t	tx_wait_queue;
 	wait_queue_head_t	tx_done_wait_queue;
 
 	struct task_struct	*rx_task_struct;
@@ -837,7 +837,7 @@ static ssize_t nrf24_tx_thread(void *data)
 		dev_dbg(&device->dev,
 			"%s: waiting for new messages",
 			__func__);
-		wait_event_interruptible(device->tx_fifo_wait_queue,
+		wait_event_interruptible(device->tx_wait_queue,
 					 kthread_should_stop() ||
 					 (!nrf24_is_rx_active(device) && !kfifo_is_empty(&device->tx_fifo)));
 
@@ -1091,7 +1091,7 @@ static ssize_t nrf24_rx_thread(void *data)
 		//start tx if all rx done and tx requested during rctive rx
 		if (!nrf24_is_rx_active(device) && device->tx_requested) {
 			dev_dbg(&device->dev, "wake up TX...");
-			wake_up_interruptible(&device->tx_fifo_wait_queue);
+			wake_up_interruptible(&device->tx_wait_queue);
 		}
 	}
 }
@@ -1203,7 +1203,7 @@ static ssize_t nrf24_write(struct file *filp,
 
 	device->tx_requested = true;
 
-	wake_up_interruptible(&device->tx_fifo_wait_queue);
+	wake_up_interruptible(&device->tx_wait_queue);
 
 	return copied;
 error:
@@ -1435,7 +1435,7 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 		return ERR_PTR(ret);
 	}
 
-	init_waitqueue_head(&device->tx_fifo_wait_queue);
+	init_waitqueue_head(&device->tx_wait_queue);
 	init_waitqueue_head(&device->tx_done_wait_queue);
 	init_waitqueue_head(&device->rx_wait_queue);
 
