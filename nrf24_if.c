@@ -82,7 +82,7 @@ struct nrf24_device {
 	struct mutex		tx_fifo_mutex;
 	struct task_struct	*tx_task_struct;
 	wait_queue_head_t	tx_fifo_wait_queue;
-	wait_queue_head_t	tx_wait_queue;
+	wait_queue_head_t	tx_done_wait_queue;
 
 	struct task_struct	*rx_task_struct;
 	wait_queue_head_t	rx_wait_queue;
@@ -947,7 +947,7 @@ static ssize_t nrf24_tx_thread(void *data)
 		nrf24_ce_hi(device);
 
 		//wait for ACK
-		wait_event_interruptible(device->tx_wait_queue,
+		wait_event_interruptible(device->tx_done_wait_queue,
 					 (device->tx_done ||
 					 kthread_should_stop()));
 
@@ -982,7 +982,7 @@ static ssize_t nrf24_tx_thread(void *data)
 			device->tx_done = false;
 
 			//wait for ACK
-			wait_event_interruptible(device->tx_wait_queue,
+			wait_event_interruptible(device->tx_done_wait_queue,
 						 (device->tx_done ||
 						 kthread_should_stop()));
 
@@ -1117,7 +1117,7 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 		dev_dbg(&device->dev, "%s: TX_DS", __func__);
 		nrf24_clear_irq(device->spi, TX_DS);
 		device->tx_done = true;
-		wake_up_interruptible(&device->tx_wait_queue);
+		wake_up_interruptible(&device->tx_done_wait_queue);
 
 	}
 
@@ -1436,7 +1436,7 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 	}
 
 	init_waitqueue_head(&device->tx_fifo_wait_queue);
-	init_waitqueue_head(&device->tx_wait_queue);
+	init_waitqueue_head(&device->tx_done_wait_queue);
 	init_waitqueue_head(&device->rx_wait_queue);
 
 	INIT_WORK(&device->isr_work, nrf24_isr_work_handler);
