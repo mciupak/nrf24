@@ -917,13 +917,14 @@ static ssize_t nrf24_tx_thread(void *data)
 		//check if dynamic payload length is enabled
 		dpl = nrf24_get_dynamic_pl(device->spi);
 
-		if (spl && dpl)
+		if (spl && dpl) {
 			//disable dynamic payload if pipe
 			//does not use dynamic payload
 			//and dynamic paload is enabled
 			ret = nrf24_disable_dynamic_pl(device->spi);
 			if (ret < 0)
 				goto next;
+		}
 
 		memset(pload, 0, PLOAD_MAX);
 		memcpy(pload, &size, sizeof(size));
