@@ -1066,7 +1066,7 @@ static ssize_t nrf24_rx_thread(void *data)
 		}
 
 		dev_dbg(p->dev, "rx %d bytes", length);
-		if (p->rx_size > 0) {
+		if (p->rx_size <= 0) {
 			memcpy(&p->rx_size, pload, sizeof(p->rx_size));
 			dev_dbg(p->dev, "RX active");
 		} else {
