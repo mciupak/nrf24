@@ -1116,7 +1116,7 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 
 	if (status & MAX_RT) {
 		nrf24_ce_lo(device);
-		dev_dbg(&device->dev, "%s: MAX_RT", __func__);
+		dev_dbg_ratelimited(&device->dev, "%s: MAX_RT", __func__);
 		nrf24_clear_irq(device->spi, MAX_RT);
 		nrf24_reuse_tx_pl(device->spi);
 		nrf24_ce_hi(device);
