@@ -84,7 +84,7 @@ static struct nrf24_pipe *nrf24_find_pipe_id(struct nrf24_device *device, int id
 	return ERR_PTR(-ENODEV);
 }
 
-static ssize_t nrf24_tx_thread(void *data)
+static int nrf24_tx_thread(void *data)
 {
 	struct nrf24_device *device = data;
 	struct nrf24_pipe *p;
@@ -95,7 +95,7 @@ static ssize_t nrf24_tx_thread(void *data)
 	ssize_t sent = 0;
 	u8 *buf;
 	bool spl;
-	bool dpl;
+	bool dpl = false;
 
 	while (true) {
 		dev_dbg(&device->dev,
@@ -223,7 +223,7 @@ static ssize_t nrf24_tx_thread(void *data)
 
 			n = spl ? p->cfg.plw : min_t(ssize_t, size, PLOAD_MAX);
 
-			dev_dbg(&device->dev, "tx %d bytes", n);
+			dev_dbg(&device->dev, "tx %zd bytes", n);
 
 			memset(pload, 0, PLOAD_MAX);
 			memcpy(pload, buf + sent, n);
@@ -287,7 +287,7 @@ abort:
 	return 0;
 }
 
-static ssize_t nrf24_rx_thread(void *data)
+static int nrf24_rx_thread(void *data)
 {
 	struct nrf24_device *device = data;
 	ssize_t pipe;
@@ -306,7 +306,7 @@ static ssize_t nrf24_rx_thread(void *data)
 		pipe = nrf24_get_rx_data_source(device->spi);
 		if (pipe < 0) {
 			dev_dbg(&device->dev,
-				"%s: get pipe failed (err: %d)",
+				"%s: get pipe failed (err: %zd)",
 				__func__,
 				pipe);
 			continue;
@@ -325,13 +325,13 @@ static ssize_t nrf24_rx_thread(void *data)
 		length = nrf24_read_rx_pload(device->spi, pload);
 		if (length < 0) {
 			dev_dbg(&device->dev,
-				"%s: could not read pload (err = %d)",
+				"%s: could not read pload (err = %zd)",
 				__func__,
 				length);
 			continue;
 		}
 
-		dev_dbg(p->dev, "rx %d bytes", length);
+		dev_dbg(p->dev, "rx %zd bytes", length);
 		if (p->rx_size <= 0) {
 			memcpy(&p->rx_size, pload, sizeof(p->rx_size));
 			dev_dbg(p->dev, "RX active");
@@ -409,7 +409,7 @@ static ssize_t nrf24_read(struct file *filp,
 			  loff_t *f_pos)
 {
 	struct nrf24_pipe *p;
-	ssize_t copied;
+	unsigned int copied;
 	ssize_t n;
 
 	p = filp->private_data;
@@ -431,12 +431,12 @@ static ssize_t nrf24_write(struct file *filp,
 	struct nrf24_device *device;
 	struct nrf24_pipe *p;
 	ssize_t n;
-	ssize_t copied;
+	unsigned int copied;
 
 	p = filp->private_data;
 	device = to_nrf24_device(p->dev->parent);
 
-	dev_dbg(p->dev, "write (%d)", size);
+	dev_dbg(p->dev, "write (%zd)", size);
 
 	mutex_lock(&device->tx_fifo_mutex);
 

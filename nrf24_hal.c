@@ -738,7 +738,7 @@ char *nrf_reg_name[] = {
 			return ret;
 
 		dev_dbg(&spi->dev,
-			"%s: %s = 0x%02X\n",
+			"%s: %s = 0%02zx\n",
 			__func__,
 			nrf_reg_name[loop],
 			ret);
