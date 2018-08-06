@@ -545,10 +545,10 @@ static ssize_t data_rate_store(struct device *dev,
 		new = NRF24_DATARATE_256KBPS;
 		break;
 	case 1024:
-		new = NRF24_DATARATE_256KBPS;
+		new = NRF24_DATARATE_1MBPS;
 		break;
 	case 2048:
-		new = NRF24_DATARATE_256KBPS;
+		new = NRF24_DATARATE_2MBPS;
 		break;
 	default:
 		return -EINVAL;
