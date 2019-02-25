@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * nRF24L01 device driver.
  * Copyright (C) 2017 Marcin Ciupak <marcin.s.ciupak@gmail.com>
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/module.h>
@@ -71,7 +60,6 @@ static void nrf24_ce_lo(struct nrf24_device *device)
 	gpiod_set_value(device->ce, 0);
 }
 
-
 static struct nrf24_pipe *nrf24_find_pipe_id(struct nrf24_device *device, int id)
 {
 	struct nrf24_pipe *pipe;
@@ -79,7 +67,6 @@ static struct nrf24_pipe *nrf24_find_pipe_id(struct nrf24_device *device, int id
 	list_for_each_entry(pipe, &device->pipes, list)
 		if (pipe->id == id)
 			return pipe;
-
 
 	return ERR_PTR(-ENODEV);
 }
@@ -91,7 +78,7 @@ static int nrf24_tx_thread(void *data)
 	u8 pload[PLOAD_MAX];
 	int ret;
 	ssize_t size;
-	ssize_t n;
+	ssize_t pload_length;
 	ssize_t sent = 0;
 	u8 *buf;
 	bool spl;
@@ -99,7 +86,7 @@ static int nrf24_tx_thread(void *data)
 
 	while (true) {
 		dev_dbg(&device->dev,
-			"%s: waiting for new messages",
+			"%s: waiting for new messages\n",
 			__func__);
 		wait_event_interruptible(device->tx_wait_queue,
 					 kthread_should_stop() ||
@@ -108,72 +95,62 @@ static int nrf24_tx_thread(void *data)
 		if (kthread_should_stop())
 			return 0;
 
-		//clear flag
 		device->tx_done = false;
 
-		//lock fifo
-		//this is needed as write to tx fifo may be done by 6 pipes
+		//fifo lock is needed as write to tx fifo may be done by 6 pipes
 		mutex_lock(&device->tx_fifo_mutex);
 
-		//take address of pipe which is sending
 		ret = kfifo_out(&device->tx_fifo, &p, sizeof(p));
 		if (ret != sizeof(p)) {
-			dev_dbg(&device->dev, "get pipe from fifo failed");
+			dev_dbg(&device->dev, "get pipe from fifo failed\n");
 			mutex_unlock(&device->tx_fifo_mutex);
 			continue;
 		}
 
-		//take out size of data
 		ret = kfifo_out(&device->tx_fifo, &size, sizeof(size));
 		if (ret != sizeof(size)) {
-			dev_dbg(&device->dev, "get size from fifo failed");
+			dev_dbg(&device->dev, "get size from fifo failed\n");
 			mutex_unlock(&device->tx_fifo_mutex);
 			continue;
 		}
 
-		//alloc space for data
 		buf = kzalloc(size, GFP_KERNEL);
 		if (!buf) {
-			dev_dbg(&device->dev, "buf alloc failed");
+			dev_dbg(&device->dev, "buf alloc failed\n");
 			mutex_unlock(&device->tx_fifo_mutex);
 			continue;
 		}
 
-		//take out size of data
 		ret = kfifo_out(&device->tx_fifo, buf, size);
 		if (ret != size) {
-			dev_dbg(&device->dev, "get buf from fifo failed");
+			dev_dbg(&device->dev, "get buf from fifo failed\n");
 			mutex_unlock(&device->tx_fifo_mutex);
 			goto next;
 		}
 
-		//unlock tx fifo
 		mutex_unlock(&device->tx_fifo_mutex);
 
 		//enter Standby-I mode
 		nrf24_ce_lo(device);
 
-		//set TX MODE
 		ret = nrf24_set_mode(device->spi, NRF24_MODE_TX);
 		if (ret < 0)
 			goto next;
 
-		//set PIPE0 address
-		//this is needed to receive ACK
+		//set PIPE0 address in order to receive ACK
 		ret = nrf24_set_address(device->spi,
 					NRF24_PIPE0,
 					(u8 *)&p->cfg.address);
 		if (ret < 0) {
-			dev_dbg(&device->dev, "set PIPE0 address failed (%d)", ret);
+			dev_dbg(&device->dev, "set PIPE0 address failed (%d)\n", ret);
 			goto next;
 		}
 
-		//set TX address
 		ret = nrf24_set_address(device->spi,
 					NRF24_TX,
 					(u8 *)&p->cfg.address);
 		if (ret < 0) {
-			dev_dbg(&device->dev, "set TX address failed (%d)", ret);
+			dev_dbg(&device->dev, "set TX address failed (%d)\n", ret);
 			goto next;
 		}
 
@@ -196,12 +173,12 @@ static int nrf24_tx_thread(void *data)
 		memcpy(pload, &size, sizeof(size));
 
 		//calculate payload length
-		n = spl ? p->cfg.plw : sizeof(size);
+		pload_length = spl ? p->cfg.plw : sizeof(size);
 
 		//send size
-		nrf24_write_tx_pload(device->spi, pload, n);
+		nrf24_write_tx_pload(device->spi, pload, pload_length);
 		if (ret < 0) {
-			dev_dbg(&device->dev, "write TX PLOAD failed (%d)", ret);
+			dev_dbg(&device->dev, "write TX PLOAD failed (%d)\n", ret);
 			goto next;
 		}
 
@@ -216,30 +193,27 @@ static int nrf24_tx_thread(void *data)
 		if (kthread_should_stop())
 			goto abort;
 
-		//clear counter
 		sent = 0;
 
 		while (size > 0) {
+			pload_length = spl ? p->cfg.plw : min_t(ssize_t, size, PLOAD_MAX);
 
-			n = spl ? p->cfg.plw : min_t(ssize_t, size, PLOAD_MAX);
-
-			dev_dbg(&device->dev, "tx %zd bytes", n);
+			dev_dbg(&device->dev, "tx %zd bytes\n", pload_length);
 
 			memset(pload, 0, PLOAD_MAX);
-			memcpy(pload, buf + sent, n);
+			memcpy(pload, buf + sent, pload_length);
 
-			//write PLOAD to nRF FIFO
-			ret = nrf24_write_tx_pload(device->spi, pload, n);
+			ret = nrf24_write_tx_pload(device->spi, pload, pload_length);
 
 			if (ret < 0) {
 				dev_dbg(&device->dev,
-					 "write TX PLOAD failed (%d)",
+					"write TX PLOAD failed (%d)\n",
 					ret);
 				goto next;
 			}
 
-			sent += n;
-			size -= n;
+			sent += pload_length;
+			size -= pload_length;
 
 			device->tx_done = false;
 
@@ -252,32 +226,28 @@ static int nrf24_tx_thread(void *data)
 				goto abort;
 		}
 next:
-		//free data buffer
 		kfree(buf);
 
 		//restore dynamic payload feature
 		if (dpl)
 			nrf24_enable_dynamic_pl(device->spi);
 
-		//if all sent enter RX MODE
+		//if all sent enter RX MODE and start receiving
 		if (kfifo_is_empty(&device->tx_fifo)) {
-
-			dev_dbg(&device->dev, "%s: NRF24_MODE_RX", __func__);
+			dev_dbg(&device->dev, "%s: NRF24_MODE_RX\n", __func__);
 
 			//enter Standby-I
 			nrf24_ce_lo(device);
 
 			p = nrf24_find_pipe_id(device, NRF24_PIPE0);
 			if (!IS_ERR(p)) {
-				//restore PIPE0 address
+				//restore PIPE0 address as it was corrupted
 				nrf24_set_address(device->spi,
 						  p->id,
 						  (u8 *)&p->cfg.address);
 			}
-			//set RX MODE
-			nrf24_set_mode(device->spi, NRF24_MODE_RX);
 
-			//enter RX MODE and start receiving
+			nrf24_set_mode(device->spi, NRF24_MODE_RX);
 			nrf24_ce_hi(device);
 		}
 	}
@@ -296,24 +266,25 @@ static int nrf24_rx_thread(void *data)
 	struct nrf24_pipe *p;
 
 	while (true) {
-
 		wait_event_interruptible(device->rx_wait_queue,
 					 (!nrf24_is_rx_fifo_empty(device->spi) ||
-					  kthread_should_stop()));
+					 kthread_should_stop()));
 		if (kthread_should_stop())
 			return 0;
 
 		pipe = nrf24_get_rx_data_source(device->spi);
 		if (pipe < 0) {
 			dev_dbg(&device->dev,
-				"%s: get pipe failed (err: %zd)",
+				"%s: get pipe failed (err: %zd)\n",
 				__func__,
 				pipe);
 			continue;
 		}
 
 		if (pipe > NRF24_PIPE5) {
-			dev_dbg(&device->dev, "%s: RX FIFO is empty!", __func__);
+			dev_dbg(&device->dev,
+				"%s: RX FIFO is empty!\n",
+				__func__);
 			continue;
 		}
 
@@ -325,31 +296,31 @@ static int nrf24_rx_thread(void *data)
 		length = nrf24_read_rx_pload(device->spi, pload);
 		if (length < 0) {
 			dev_dbg(&device->dev,
-				"%s: could not read pload (err = %zd)",
+				"%s: could not read pload (err = %zd)\n",
 				__func__,
 				length);
 			continue;
 		}
 
-		dev_dbg(p->dev, "rx %zd bytes", length);
+		dev_dbg(p->dev, "rx %zd bytes\n", length);
 		if (p->rx_size <= 0) {
 			memcpy(&p->rx_size, pload, sizeof(p->rx_size));
-			dev_dbg(p->dev, "RX active");
+			dev_dbg(p->dev, "RX active\n");
 		} else {
-			//get length of remaining
 			length = p->rx_size < p->cfg.plw ? p->rx_size : length;
 
-			p->rx_size -= kfifo_in(&p->rx_fifo, &pload, length);
+			p->rx_size -= kfifo_in(&p->rx_fifo, pload, length);
+
+			wake_up_interruptible(&p->read_wait_queue);
 
 			if (p->rx_size <= 0) {
-				dev_dbg(p->dev, "RX done");
-				wake_up_interruptible(&p->poll_wait_queue);
+				dev_dbg(p->dev, "RX done\n");
 			}
 		}
 
-		//start tx if all rx done and tx requested during rctive rx
+		//start tx if all rx done and tx requested during active rx
 		if (!nrf24_is_rx_active(device) && !kfifo_is_empty(&device->tx_fifo)) {
-			dev_dbg(&device->dev, "wake up TX...");
+			dev_dbg(&device->dev, "wake up TX...\n");
 			wake_up_interruptible(&device->tx_wait_queue);
 		}
 	}
@@ -367,22 +338,21 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 		return;
 
 	if (status & RX_DR) {
-		dev_dbg(&device->dev, "%s: RX_DR", __func__);
+		dev_dbg(&device->dev, "%s: RX_DR\n", __func__);
 		nrf24_clear_irq(device->spi, RX_DR);
 		wake_up_interruptible(&device->rx_wait_queue);
 	}
 
 	if (status & TX_DS) {
-		dev_dbg(&device->dev, "%s: TX_DS", __func__);
+		dev_dbg(&device->dev, "%s: TX_DS\n", __func__);
 		nrf24_clear_irq(device->spi, TX_DS);
 		device->tx_done = true;
 		wake_up_interruptible(&device->tx_done_wait_queue);
-
 	}
 
 	if (status & MAX_RT) {
 		nrf24_ce_lo(device);
-		dev_dbg_ratelimited(&device->dev, "%s: MAX_RT", __func__);
+		dev_dbg_ratelimited(&device->dev, "%s: MAX_RT\n", __func__);
 		nrf24_clear_irq(device->spi, MAX_RT);
 		nrf24_reuse_tx_pl(device->spi);
 		nrf24_ce_hi(device);
@@ -414,8 +384,13 @@ static ssize_t nrf24_read(struct file *filp,
 
 	p = filp->private_data;
 
-	if (kfifo_is_empty(&p->rx_fifo) && (filp->f_flags & O_NONBLOCK))
-		return -EAGAIN;
+	if (kfifo_is_empty(&p->rx_fifo)) {
+		if (filp->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		else
+			wait_event_interruptible(p->read_wait_queue,
+                                                 !kfifo_is_empty(&p->rx_fifo));
+	}
 
 	n = kfifo_to_user(&p->rx_fifo, buf, size, &copied);
 	if (n)
@@ -436,34 +411,31 @@ static ssize_t nrf24_write(struct file *filp,
 	p = filp->private_data;
 	device = to_nrf24_device(p->dev->parent);
 
-	dev_dbg(p->dev, "write (%zd)", size);
+	dev_dbg(p->dev, "write (%zd)\n", size);
 
 	mutex_lock(&device->tx_fifo_mutex);
 
-	//put pipe pointer in fifo
 	n = kfifo_in(&device->tx_fifo, &p, sizeof(p));
 	if (n != sizeof(p))
-		goto error;
+		goto err_kfifo_reset;
 
-	//put size in fifo
 	n = kfifo_in(&device->tx_fifo, &size, sizeof(size));
 	if (n != sizeof(size))
-		goto error;
+		goto err_kfifo_reset;
 
-	//put data to be sent into fifo
 	n = kfifo_from_user(&device->tx_fifo,
 			    buf,
 			    size,
 			    &copied);
 	if (n || size != copied)
-		goto error;
+		goto err_kfifo_reset;
 
 	mutex_unlock(&device->tx_fifo_mutex);
 
 	wake_up_interruptible(&device->tx_wait_queue);
 
 	return copied;
-error:
+err_kfifo_reset:
 	kfifo_reset(&device->tx_fifo);
 	mutex_unlock(&device->tx_fifo_mutex);
 	return -EAGAIN;
@@ -502,13 +474,13 @@ static unsigned int nrf24_poll(struct file *filp,
 	p = filp->private_data;
 	device = to_nrf24_device(p->dev->parent);
 
-	dev_dbg(p->dev, "%s: waiting...", __func__);
-	poll_wait(filp, &p->poll_wait_queue, wait);
+	dev_dbg(p->dev, "%s: waiting...\n", __func__);
+	poll_wait(filp, &p->read_wait_queue, wait);
 	if (!kfifo_is_empty(&p->rx_fifo)) {
-		dev_dbg(p->dev, "%s: got data!", __func__);
+		dev_dbg(p->dev, "%s: got data!\n", __func__);
 		return POLLIN | POLLRDNORM;
 	}
-	dev_dbg(p->dev, "%s: no data!", __func__);
+	dev_dbg(p->dev, "%s: no data!\n", __func__);
 	return 0;
 }
 
@@ -544,21 +516,20 @@ static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 	p = kzalloc(sizeof(*p), GFP_KERNEL);
 	if (!p) {
 		ret = -ENOMEM;
-		goto error_alloc;
+		goto err_return;
 	}
 
 	ret = ida_simple_get(&nrf24_ida_pipe, 0, 0, GFP_KERNEL);
 	if (ret < 0) {
-		dev_err(&device->dev, "%s: get_minor failed", __func__);
-		goto error_minor;
+		dev_err(&device->dev, "%s: get_minor failed\n", __func__);
+		goto err_free_mem;
 	}
 
 	p->devt = MKDEV(MAJOR(nrf24_dev), ret);
 	p->id = id;
 
 	INIT_KFIFO(p->rx_fifo);
-	init_waitqueue_head(&p->poll_wait_queue);
-
+	init_waitqueue_head(&p->read_wait_queue);
 
 	p->dev = device_create_with_groups(nrf24_class,
 					   &device->dev,
@@ -571,36 +542,36 @@ static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 
 	if (IS_ERR(p->dev)) {
 		dev_err(&device->dev,
-			"%s: device_create of '%s' failed",
+			"%s: device_create of pipe %d failed\n",
 			__func__,
-			dev_name(p->dev));
+			p->id);
 		ret = PTR_ERR(p->dev);
-		goto error_device;
+		goto err_ida_remove;
 	}
 
 	cdev_init(&p->cdev, &nrf24_fops);
 	p->cdev.owner = THIS_MODULE;
 	ret = cdev_add(&p->cdev, p->devt, 1);
 	if (ret < 0) {
-		dev_err(&device->dev, "%s: cdev failed", __func__);
-		goto cdev_err;
+		dev_err(&device->dev, "%s: cdev failed\n", __func__);
+		goto err_dev_destroy;
 	}
 
 	dev_dbg(&device->dev,
-		"%s: device created: major(%d), minor(%d)",
+		"%s: device created: major(%d), minor(%d)\n",
 		__func__,
 		MAJOR(p->devt),
 		MINOR(p->devt));
 
 	return p;
 
-cdev_err:
+err_dev_destroy:
 	device_destroy(nrf24_class, p->devt);
-error_device:
+err_ida_remove:
 	ida_simple_remove(&nrf24_ida_pipe, MINOR(p->devt));
-error_minor:
+err_free_mem:
 	kfree(p);
-error_alloc:
+err_return:
 	return ERR_PTR(ret);
 }
 
@@ -619,34 +590,29 @@ static int nrf24_gpio_setup(struct nrf24_device *device)
 	device->ce = gpiod_get(&device->spi->dev, "ce", 0);
 
 	if (device->ce == ERR_PTR(-ENOENT))
-		dev_dbg(&device->dev, "%s: no entry for CE", __func__);
+		dev_dbg(&device->dev, "%s: no entry for CE\n", __func__);
 	else if (device->ce == ERR_PTR(-EBUSY))
-		dev_dbg(&device->dev, "%s: CE is busy", __func__);
+		dev_dbg(&device->dev, "%s: CE is busy\n", __func__);
 
 	if (IS_ERR(device->ce)) {
 		ret = PTR_ERR(device->ce);
-		dev_err(&device->dev, "%s: CE gpio setup error", __func__);
+		dev_err(&device->dev, "%s: CE gpio setup error\n", __func__);
 		return ret;
 	}
 
 	nrf24_ce_lo(device);
 
-	//irq
 	ret = request_irq(device->spi->irq,
 			  nrf24_isr,
 			  0,
 			  dev_name(&device->dev),
 			  device);
 	if (ret < 0) {
-		free_irq(device->spi->irq, device);
-		goto err;
+		gpiod_put(device->ce);
+		return ret;
 	}
 
 	return 0;
-
-err:
-	gpiod_put(device->ce);
-	return ret;
 }
 
 static void nrf24_dev_release(struct device *dev)
@@ -689,6 +655,8 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 	ret = device_register(&device->dev);
 	if (ret < 0) {
 		put_device(&device->dev);
+		ida_simple_remove(&nrf24_ida_dev, id);
+
 		return ERR_PTR(ret);
 	}
 
@@ -715,7 +683,6 @@ static int nrf24_hal_init(struct nrf24_device *device)
 	ret = nrf24_soft_reset(spi);
 	if (ret < 0)
 		return ret;
-
 
 	list_for_each_entry(pipe, &device->pipes, list) {
 		ret = nrf24_get_address(spi,
@@ -769,7 +736,6 @@ static int nrf24_hal_init(struct nrf24_device *device)
 	nrf24_ce_hi(device);
 
 	return ret;
-
 }
 
 static int nrf24_probe(struct spi_device *spi)
@@ -784,69 +750,63 @@ static int nrf24_probe(struct spi_device *spi)
 
 	ret = spi_setup(spi);
 	if (ret < 0) {
-		dev_err(&spi->dev, "%s: spi_setup failed", __func__);
+		dev_err(&spi->dev, "%s: spi_setup failed\n", __func__);
 		return ret;
 	}
 
 	device = nrf24_dev_init(spi);
 	if (IS_ERR(device)) {
-		dev_err(&device->spi->dev, "%s: dev_init failed", __func__);
+		dev_err(&spi->dev, "%s: dev_init failed\n", __func__);
 		return PTR_ERR(device);
 	}
 
 	ret = nrf24_gpio_setup(device);
 	if (ret < 0) {
-		dev_err(&device->dev, "%s: gpio_setup failed", __func__);
-		goto gpio_setup_err;
+		dev_err(&device->dev, "%s: gpio_setup failed\n", __func__);
+		goto err_dev_unregister;
 	}
-
 
 	for (i = 0; i <= NRF24_PIPE5; i++) {
 		pipe = nrf24_create_pipe(device, i);
 		if (IS_ERR(pipe)) {
 			ret = PTR_ERR(pipe);
-			goto device_err;
+			goto err_devs_destroy;
 		}
 		list_add(&pipe->list, &device->pipes);
 	}
 
 	ret = nrf24_hal_init(device);
 	if (ret < 0)
-		goto hal_init_err;
+		goto err_devs_destroy;
 
-	/* start rx thread */
 	device->rx_task_struct = kthread_run(nrf24_rx_thread,
 					     device,
 					     "nrf%d_rx_thread",
 					     device->id);
 	if (IS_ERR(device->rx_task_struct)) {
-		dev_err(&device->dev, "start of tx thread failed");
-		goto rx_thread_err;
+		dev_err(&device->dev, "start of tx thread failed\n");
+		goto err_devs_destroy;
 	}
 
-	/* start tx thread */
 	device->tx_task_struct = kthread_run(nrf24_tx_thread,
 					     device,
 					     "nrf%d_tx_thread",
 					     device->id);
 	if (IS_ERR(device->tx_task_struct)) {
-		dev_err(&device->dev, "start of tx thread failed");
-		goto tx_thread_err;
+		dev_err(&device->dev, "start of tx thread failed\n");
+		goto err_kthread_stop;
 	}
-
 
 	spi_set_drvdata(spi, device);
 
 	return 0;
 
-tx_thread_err:
+err_kthread_stop:
 	kthread_stop(device->rx_task_struct);
-rx_thread_err:
-hal_init_err:
-device_err:
+err_devs_destroy:
 	nrf24_destroy_devices(device);
 	nrf24_gpio_free(device);
-gpio_setup_err:
+err_dev_unregister:
 	device_unregister(&device->dev);
 	return ret;
 }
@@ -854,7 +814,6 @@ gpio_setup_err:
 static int nrf24_remove(struct spi_device *spi)
 {
 	struct nrf24_device *device = spi_get_drvdata(spi);
-
 
 	nrf24_gpio_free(device);
 
@@ -867,7 +826,6 @@ static int nrf24_remove(struct spi_device *spi)
 
 	return 0;
 }
-
 
 static const struct of_device_id nrf24_dt_ids[] = {
 	{ .compatible = "nordic,nrf24" },
@@ -886,7 +844,6 @@ static  struct spi_driver nrf24_spi_driver = {
 	.remove = nrf24_remove,
 };
 
-
 static int __init nrf24_init(void)
 {
 	int ret;
@@ -894,30 +851,30 @@ static int __init nrf24_init(void)
 	ret = alloc_chrdev_region(&nrf24_dev, 0, N_NRF24_MINORS,
 				  nrf24_spi_driver.driver.name);
 	if (ret < 0) {
-		pr_err("Unable to alloc chrdev region");
-		goto chrdev_err;
+		pr_err("Unable to alloc chrdev region\n");
+		goto err_ida_destroy;
 	}
 
 	nrf24_class = class_create(THIS_MODULE, nrf24_spi_driver.driver.name);
 	if (IS_ERR(nrf24_class)) {
-		pr_err("Unable to create class");
+		pr_err("Unable to create class\n");
 		ret = PTR_ERR(nrf24_class);
-		goto class_err;
+		goto err_unreg_chrdev;
 	}
 
 	ret = spi_register_driver(&nrf24_spi_driver);
 	if (ret < 0) {
-		pr_err("Unable to register spi driver");
-		goto spi_err;
+		pr_err("Unable to register spi driver\n");
+		goto err_class_destroy;
 	}
 
 	return 0;
 
-spi_err:
+err_class_destroy:
 	class_destroy(nrf24_class);
-class_err:
+err_unreg_chrdev:
 	unregister_chrdev(MAJOR(nrf24_dev), nrf24_spi_driver.driver.name);
-chrdev_err:
+err_ida_destroy:
 	ida_destroy(&nrf24_ida_dev);
 	ida_destroy(&nrf24_ida_pipe);
 

@@ -1,12 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
+/*
+ * Copyright (C) 2017 Marcin Ciupak <marcin.s.ciupak@gmail.com>
+ *
+ */
+
 #ifndef NRF24_IF_H
 #define NRF24_IF_H
-
 
 #define FIFO_SIZE			65536
 
 struct nrf24_pipe_cfg {
 	u64			address;
-	bool			ack;
+	u8			ack;
 	ssize_t			plw;
 };
 
@@ -17,8 +23,8 @@ struct nrf24_pipe {
 	int			id;
 	struct nrf24_pipe_cfg	cfg;
 
-	STRUCT_KFIFO_REC_1(FIFO_SIZE) rx_fifo;
-	wait_queue_head_t	poll_wait_queue;
+	DECLARE_KFIFO(rx_fifo, u8, FIFO_SIZE);
+	wait_queue_head_t	read_wait_queue;
 	ssize_t			rx_size;
 
 	struct list_head list;
@@ -31,12 +37,16 @@ struct nrf24_device {
 	struct list_head	pipes;
 
 	struct gpio_desc	*ce;
+
+	/* for irqsave */
 	spinlock_t		lock;
 
 	struct work_struct	isr_work;
 
-	//tx
+	/* tx */
 	STRUCT_KFIFO_REC_2(FIFO_SIZE) tx_fifo;
+
+	/* tx fifo lock */
 	struct mutex		tx_fifo_mutex;
 	struct task_struct	*tx_task_struct;
 	wait_queue_head_t	tx_wait_queue;
@@ -45,7 +55,7 @@ struct nrf24_device {
 	struct task_struct	*rx_task_struct;
 	wait_queue_head_t	rx_wait_queue;
 
-	bool			tx_done;
+	u8			tx_done;
 };
 
 #define to_nrf24_device(device)	container_of(device, struct nrf24_device, dev)

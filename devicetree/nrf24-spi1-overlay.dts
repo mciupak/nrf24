@@ -1,9 +1,15 @@
-// Definitions for NRF24
+// SPDX-License-Identifier: GPL-2.0
+
+//
+// Copyright (C) 2017 Marcin Ciupak <marcin.s.ciupak@gmail.com>
+//
+
+/* Definitions for NRF24 */
 /dts-v1/;
 /plugin/;
 
 / {
-        compatible = "bcm,bcm2835", "bcm,bcm2708", "bcm,bcm2709";
+	compatible = "bcm,bcm2835", "bcm,bcm2708", "bcm,bcm2709";
 
 	fragment@0 {
 		target = <&spi1>;
@@ -42,8 +48,7 @@
 	};
 
 	__overrides__ {
-		int_pin = <&nrf1>, "interrupts:0",
-		          <&nrf1_pins>, "brcm,pins:0";
+		int_pin = <&nrf1>, "interrupts:0", <&nrf1_pins>, "brcm,pins:0";
 		speed   = <&nrf1>, "spi-max-frequency:0";
 	};
 };

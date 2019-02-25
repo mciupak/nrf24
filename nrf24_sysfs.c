@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * nrf24l01 device driver.
- * copyright (c) 2017 marcin ciupak <marcin.s.ciupak@gmail.com>
+ * Copyright (C) 2017 Marcin Ciupak <marcin.s.ciupak@gmail.com>
  *
- * this program is free software: you can redistribute it and/or modify
- * it under the terms of the gnu general public license as published by
- * the free software foundation, either version 3 of the license, or
- * (at your option) any later version.
- *
- * this program is distributed in the hope that it will be useful,
- * but without any warranty; without even the implied warranty of
- * merchantability or fitness for a particular purpose.  see the
- * gnu general public license for more details.
- *
- * you should have received a copy of the gnu general public license
- * along with this program.  if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/types.h>
@@ -47,7 +36,6 @@ static ssize_t ack_show(struct device *dev,
 	int ret;
 	struct nrf24_pipe *pipe;
 
-
 	pipe = nrf24_find_pipe_ptr(dev);
 	if (IS_ERR(pipe))
 		return PTR_ERR(pipe);
@@ -56,7 +44,7 @@ static ssize_t ack_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", ret);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", ret);
 }
 
 static ssize_t ack_store(struct device *dev,
@@ -102,7 +90,7 @@ static ssize_t plw_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", ret);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", ret);
 }
 
 static ssize_t plw_store(struct device *dev,
@@ -113,7 +101,7 @@ static ssize_t plw_store(struct device *dev,
 	struct nrf24_device *device = to_nrf24_device(dev->parent);
 	int ret;
 	u8 new;
-	u8 old;
+	ssize_t old;
 	struct nrf24_pipe *pipe;
 
 	pipe = nrf24_find_pipe_ptr(dev);
@@ -130,7 +118,7 @@ static ssize_t plw_store(struct device *dev,
 	if (old < 0)
 		return old;
 
-	if (old != new) {
+	if ((u8)old != new) {
 		ret = nrf24_set_rx_pload_width(device->spi, pipe->id, new);
 		if (ret < 0)
 			return ret;
@@ -139,6 +127,7 @@ static ssize_t plw_store(struct device *dev,
 
 	return count;
 }
+
 static ssize_t address_show(struct device *dev,
 			    struct device_attribute *attr,
 			    char *buf)
@@ -158,10 +147,10 @@ static ssize_t address_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	count = snprintf(buf, PAGE_SIZE, "0x");
+	count = scnprintf(buf, PAGE_SIZE, "0x");
 	for (i = --ret; i >= 0; i--)
-		count += snprintf(buf + count, PAGE_SIZE, "%02X", addr[i]);
-	count += snprintf(buf + count, PAGE_SIZE, "\n");
+		count += scnprintf(buf + count, PAGE_SIZE - count, "%02X", addr[i]);
+	count += scnprintf(buf + count, PAGE_SIZE - count, "\n");
 
 	return count;
 }
@@ -210,10 +199,9 @@ struct attribute *nrf24_pipe_attrs[] = {
 	NULL,
 };
 
-
 static ssize_t tx_address_show(struct device *dev,
-			    struct device_attribute *attr,
-			    char *buf)
+			       struct device_attribute *attr,
+			       char *buf)
 {
 	struct nrf24_device *device = to_nrf24_device(dev);
 	u8 addr[16];
@@ -221,15 +209,14 @@ static ssize_t tx_address_show(struct device *dev,
 	int count;
 	int i;
 
-
 	ret = nrf24_get_address(device->spi, NRF24_TX, addr);
 	if (ret < 0)
 		return ret;
 
-	count = snprintf(buf, PAGE_SIZE, "0x");
+	count = scnprintf(buf, PAGE_SIZE, "0x");
 	for (i = --ret; i >= 0; i--)
-		count += snprintf(buf + count, PAGE_SIZE, "%02X", addr[i]);
-	count += snprintf(buf + count, PAGE_SIZE, "\n");
+		count += scnprintf(buf + count, PAGE_SIZE - count, "%02X", addr[i]);
+	count += scnprintf(buf + count, PAGE_SIZE - count, "\n");
 
 	return count;
 }
@@ -273,14 +260,14 @@ static ssize_t status_show(struct device *dev,
 	ret = nrf24_get_status(device->spi);
 	if (ret < 0)
 		return ret;
-	return snprintf(buf, PAGE_SIZE, "STATUS = 0x%02X\n", ret);
+	return scnprintf(buf, PAGE_SIZE, "STATUS = 0x%02X\n", ret);
 }
 
 static ssize_t available_crc_show(struct device *dev,
 				  struct device_attribute *attr,
 				  char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "0 8 16\n");
+	return scnprintf(buf, PAGE_SIZE, "0 8 16\n");
 }
 
 static ssize_t crc_show(struct device *dev,
@@ -296,13 +283,13 @@ static ssize_t crc_show(struct device *dev,
 
 	switch (ret) {
 	case NRF24_CRC_OFF:
-		ret = snprintf(buf, PAGE_SIZE, "0\n");
+		ret = scnprintf(buf, PAGE_SIZE, "0\n");
 		break;
 	case NRF24_CRC_8BIT:
-		ret = snprintf(buf, PAGE_SIZE, "8\n");
+		ret = scnprintf(buf, PAGE_SIZE, "8\n");
 		break;
 	case NRF24_CRC_16BIT:
-		ret = snprintf(buf, PAGE_SIZE, "16\n");
+		ret = scnprintf(buf, PAGE_SIZE, "16\n");
 		break;
 	default:
 		return -EINVAL;
@@ -348,7 +335,7 @@ static ssize_t crc_store(struct device *dev,
 		ret = nrf24_set_crc_mode(device->spi, new);
 		if (ret < 0)
 			return ret;
-		dev_dbg(dev, "%s: new crc mode = %d", __func__, new);
+		dev_dbg(dev, "%s: new crc mode = %d\n", __func__, new);
 	}
 	return count;
 }
@@ -357,7 +344,7 @@ static ssize_t available_address_width_show(struct device *dev,
 					    struct device_attribute *attr,
 					    char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "3 4 5\n");
+	return scnprintf(buf, PAGE_SIZE, "3 4 5\n");
 }
 
 static ssize_t address_width_show(struct device *dev,
@@ -371,7 +358,7 @@ static ssize_t address_width_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", ret);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", ret);
 }
 
 static ssize_t address_width_store(struct device *dev,
@@ -402,7 +389,7 @@ static ssize_t address_width_store(struct device *dev,
 		ret = nrf24_set_address_width(device->spi, new);
 		if (ret < 0)
 			return ret;
-		dev_dbg(dev, "%s: new address width = %d", __func__, new);
+		dev_dbg(dev, "%s: new address width = %d\n", __func__, new);
 	}
 	return count;
 }
@@ -411,12 +398,12 @@ static ssize_t available_output_power_show(struct device *dev,
 					   struct device_attribute *attr,
 					   char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "0 -6 -12 -18\n");
+	return scnprintf(buf, PAGE_SIZE, "0 -6 -12 -18\n");
 }
 
 static ssize_t rf_power_show(struct device *dev,
-				 struct device_attribute *attr,
-				 char *buf)
+			     struct device_attribute *attr,
+			     char *buf)
 {
 	int ret;
 	struct nrf24_device *device = to_nrf24_device(dev);
@@ -427,16 +414,16 @@ static ssize_t rf_power_show(struct device *dev,
 
 	switch (ret) {
 	case NRF24_POWER_0DBM:
-		ret = snprintf(buf, PAGE_SIZE, "0\n");
+		ret = scnprintf(buf, PAGE_SIZE, "0\n");
 		break;
 	case NRF24_POWER_6DBM:
-		ret = snprintf(buf, PAGE_SIZE, "-6\n");
+		ret = scnprintf(buf, PAGE_SIZE, "-6\n");
 		break;
 	case NRF24_POWER_12DBM:
-		ret = snprintf(buf, PAGE_SIZE, "-12\n");
+		ret = scnprintf(buf, PAGE_SIZE, "-12\n");
 		break;
 	case NRF24_POWER_18DBM:
-		ret = snprintf(buf, PAGE_SIZE, "-18\n");
+		ret = scnprintf(buf, PAGE_SIZE, "-18\n");
 		break;
 	default:
 		return -EINVAL;
@@ -446,9 +433,9 @@ static ssize_t rf_power_show(struct device *dev,
 }
 
 static ssize_t rf_power_store(struct device *dev,
-				  struct device_attribute *attr,
-				  const char *buf,
-				  size_t count)
+			      struct device_attribute *attr,
+			      const char *buf,
+			      size_t count)
 {
 	int ret;
 	u8 new;
@@ -486,7 +473,7 @@ static ssize_t rf_power_store(struct device *dev,
 		ret = nrf24_set_rf_power(device->spi, new);
 		if (ret < 0)
 			return ret;
-		dev_dbg(dev, "%s: new rf power level = %d", __func__, new);
+		dev_dbg(dev, "%s: new rf power level = %d\n", __func__, new);
 	}
 	return count;
 }
@@ -495,7 +482,7 @@ static ssize_t available_data_rate_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "256 1024 2048\n");
+	return scnprintf(buf, PAGE_SIZE, "256 1024 2048\n");
 }
 
 static ssize_t data_rate_show(struct device *dev,
@@ -511,13 +498,13 @@ static ssize_t data_rate_show(struct device *dev,
 
 	switch (ret) {
 	case NRF24_DATARATE_256KBPS:
-		ret = snprintf(buf, PAGE_SIZE, "256\n");
+		ret = scnprintf(buf, PAGE_SIZE, "256\n");
 		break;
 	case NRF24_DATARATE_1MBPS:
-		ret = snprintf(buf, PAGE_SIZE, "1024\n");
+		ret = scnprintf(buf, PAGE_SIZE, "1024\n");
 		break;
 	case NRF24_DATARATE_2MBPS:
-		ret = snprintf(buf, PAGE_SIZE, "2048\n");
+		ret = scnprintf(buf, PAGE_SIZE, "2048\n");
 		break;
 	}
 
@@ -562,7 +549,7 @@ static ssize_t data_rate_store(struct device *dev,
 		ret = nrf24_set_datarate(device->spi, new);
 		if (ret < 0)
 			return ret;
-		dev_dbg(dev, "%s: new datarate = %d", __func__, new);
+		dev_dbg(dev, "%s: new datarate = %d\n", __func__, new);
 	}
 	return count;
 }
@@ -575,8 +562,8 @@ static ssize_t available_retr_delay_show(struct device *dev,
 	int count = 0;
 
 	for (i = 1; i <= 16; i++)
-		count += snprintf(buf + count, PAGE_SIZE, "%d ", i * 250);
-	buf[count - 1] = '\n';
+		count += scnprintf(buf + count, PAGE_SIZE - count, "%d ", i * 250);
+	count += scnprintf(buf + count, PAGE_SIZE - count, "\n");
 
 	return count;
 }
@@ -621,7 +608,7 @@ static ssize_t retr_delay_store(struct device *dev,
 		ret = nrf24_set_auto_retr_delay(device->spi, new);
 		if (ret < 0)
 			return ret;
-		dev_dbg(dev, "%s: new autr retr delay = %d", __func__, new);
+		dev_dbg(dev, "%s: new autr retr delay = %d\n", __func__, new);
 	}
 	return count;
 }
@@ -634,8 +621,8 @@ static ssize_t available_retr_count_show(struct device *dev,
 	int count = 0;
 
 	for (i = 0; i < 16; i++)
-		count += snprintf(buf + count, PAGE_SIZE, "%d ", i);
-	buf[count - 1] = '\n';
+		count += scnprintf(buf + count, PAGE_SIZE - count, "%d ", i);
+	count += scnprintf(buf + count, PAGE_SIZE - count, "\n");
 
 	return count;
 }
@@ -651,7 +638,7 @@ static ssize_t retr_count_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", ret);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", ret);
 }
 
 static ssize_t retr_count_store(struct device *dev,
@@ -680,7 +667,7 @@ static ssize_t retr_count_store(struct device *dev,
 		ret = nrf24_set_auto_retr_count(device->spi, new);
 		if (ret < 0)
 			return ret;
-		dev_dbg(dev, "%s: new autr retr count = %d", __func__, new);
+		dev_dbg(dev, "%s: new autr retr count = %d\n", __func__, new);
 	}
 	return count;
 }
@@ -717,5 +704,4 @@ struct attribute *nrf24_attrs[] = {
 	&dev_attr_available_retr_count.attr,
 	NULL,
 };
-
 

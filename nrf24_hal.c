@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * nRF24L01 device driver.
  * Copyright (C) 2017 Marcin Ciupak <marcin.s.ciupak@gmail.com>
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/types.h>
@@ -28,7 +17,7 @@ static ssize_t nrf24_read_reg(struct spi_device *spi, u8 addr)
 	ret = spi_w8r8(spi, addr);
 
 	if (ret < 0)
-		dev_dbg(&spi->dev, "%s: read 0x%X FAILED", __func__, addr);
+		dev_dbg(&spi->dev, "%s: read 0x%X FAILED\n", __func__, addr);
 
 	return ret;
 }
@@ -52,13 +41,16 @@ static ssize_t nrf24_write_reg(struct spi_device *spi, u8 addr, u8 val)
 		ret = spi_write(spi, buffer, 1);
 	}
 	if (ret < 0)
-		dev_dbg(&spi->dev, "%s: write 0x%X to 0x%X  FAILED",
+		dev_dbg(&spi->dev, "%s: write 0x%X to 0x%X  FAILED\n",
 			__func__, val, addr);
 
 	return ret;
 }
 
-static ssize_t nrf24_write_multireg(struct spi_device *spi, u8 reg, u8 *buf, u8 length)
+static ssize_t nrf24_write_multireg(struct spi_device *spi,
+				    u8 reg,
+				    u8 *buf,
+				    u8 length)
 {
 	u8 buffer[PLOAD_MAX + 1];
 
@@ -78,7 +70,7 @@ static ssize_t nrf24_write_multireg(struct spi_device *spi, u8 reg, u8 *buf, u8 
 		buffer[0] = W_TX_PAYLOAD_NOACK;
 		break;
 	default:
-		dev_dbg(&spi->dev, "%s: invalid parameter", __func__);
+		dev_dbg(&spi->dev, "%s: invalid parameter\n", __func__);
 		return -EINVAL;
 	}
 
@@ -115,7 +107,7 @@ static ssize_t nrf24_read_multireg(struct spi_device *spi, u8 reg, u8 *buf)
 		}
 		break;
 	default:
-		dev_dbg(&spi->dev, "%s: invalid parameter", __func__);
+		dev_dbg(&spi->dev, "%s: invalid parameter\n", __func__);
 		return -EINVAL;
 	}
 
@@ -165,8 +157,8 @@ ssize_t nrf24_disable_dynamic_pl(struct spi_device *spi)
 }
 
 static ssize_t nrf24_setup_dynamic_pl(struct spi_device *spi,
-				     u8 pipe,
-				     bool enable)
+				      u8 pipe,
+				      bool enable)
 {
 	ssize_t dynpd;
 	ssize_t ret;
@@ -236,8 +228,6 @@ static ssize_t nrf24_disable_pipe(struct spi_device *spi, u8 pipe)
 	return nrf24_write_reg(spi, EN_RXADDR, rxaddr & ~BIT(pipe));
 }
 
-
-
 ssize_t nrf24_open_pipe(struct spi_device *spi, enum nrf24_pipe_num pipe)
 {
 	ssize_t ret = -EINVAL;
@@ -255,7 +245,7 @@ ssize_t nrf24_open_pipe(struct spi_device *spi, enum nrf24_pipe_num pipe)
 		ret = nrf24_write_reg(spi, EN_RXADDR, 0x3F);
 		break;
 	default:
-		dev_dbg(&spi->dev, "%s: invalid parameter", __func__);
+		dev_dbg(&spi->dev, "%s: invalid parameter\n", __func__);
 	}
 
 	return ret;
@@ -284,7 +274,7 @@ ssize_t nrf24_close_pipe(struct spi_device *spi, enum nrf24_pipe_num pipe)
 		ret = nrf24_write_reg(spi, EN_AA, 0x00);
 		break;
 	default:
-		dev_dbg(&spi->dev, "%s: invalid parameter", __func__);
+		dev_dbg(&spi->dev, "%s: invalid parameter\n", __func__);
 	}
 
 	return ret;
@@ -313,7 +303,7 @@ ssize_t nrf24_set_address(struct spi_device *spi,
 		ret = nrf24_write_reg(spi, RX_ADDR_P0 + pipe, *addr);
 		break;
 	default:
-		dev_dbg(&spi->dev, "%s: invalid parameter", __func__);
+		dev_dbg(&spi->dev, "%s: invalid parameter\n", __func__);
 	}
 
 	return ret;
@@ -386,7 +376,6 @@ ssize_t nrf24_set_auto_retr_delay(struct spi_device *spi, u16 delay)
 
 	retr &= 0x0F;
 	retr |= (((delay / 250) - 1) << 4);
-
 
 	return nrf24_write_reg(spi, SETUP_RETR, retr);
 }
@@ -696,7 +685,6 @@ ssize_t nrf24_flush_fifo(struct spi_device *spi)
 
 ssize_t nrf24_print_status(struct spi_device *spi)
 {
-
 const u8 nrf_reg[] = {
 	CONFIG,
 	EN_AA,
@@ -728,11 +716,11 @@ char *nrf_reg_name[] = {
 	"DYNPD",
 	"FEATURE"
 };
+
 	ssize_t loop;
 	ssize_t ret;
 
 	for (loop = 0; loop < 13; loop++) {
-
 		ret = spi_w8r8(spi, nrf_reg[loop]);
 		if (ret < 0)
 			return ret;
@@ -742,8 +730,8 @@ char *nrf_reg_name[] = {
 			__func__,
 			nrf_reg_name[loop],
 			ret);
-
 	}
+
 	return 0;
 }
 

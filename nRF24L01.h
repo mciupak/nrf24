@@ -1,19 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * nRF24L01 device driver.
  * Copyright (C) 2017 Marcin Ciupak <marcin.s.ciupak@gmail.com>
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef NRF24L01_H
@@ -47,7 +36,6 @@
 #define FIFO_STATUS		0x17
 #define DYNPD			0x1C
 #define FEATURE			0x1D
-
 
 /* nRF24L01 Instruction Definitions */
 #define W_REGISTER		0x20
