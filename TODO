@@ -1,7 +1,6 @@
 Todo:
-- opening and closing pipes via sysfs
-- improve switching in between RX and TX
-- improve handling of MAX_RT interrupt
-- find and fix bugs
-- code cleanup
-
+- opening, closing and configuring pipes via configfs
+- improve switching in between RX and TX (based on timeouts instead of message length)
+- improve handling of MAX_RT interrupt (decide what to do with data which could not to be sent)
+- add W_ACK_PAYLOAD command
+- fix bugs
