@@ -7,7 +7,7 @@ nrf24-objs := nrf24_if.o nrf24_hal.o nrf24_sysfs.o
 
 CFLAGS_nrf24_if.o := -DDEBUG
 CFLAGS_nrf24_hal.o := -DDEBUG
-CFLAGS_nrf24_sysfso := -DDEBUG
+CFLAGS_nrf24_sysfs.o := -DDEBUG
 
 KERNEL_DIR ?= ../linux
 

@@ -23,6 +23,7 @@
 #include <linux/wait.h>
 #include <linux/poll.h>
 #include <linux/list.h>
+#include <linux/timer.h>
 
 #include "nrf24_if.h"
 #include "nrf24_sysfs.h"
@@ -45,7 +46,7 @@ static bool nrf24_is_rx_active(struct nrf24_device *device)
 	bool active = false;
 
 	list_for_each_entry(pipe, &device->pipes, list)
-		active |= pipe->rx_size > 0;
+		active |= pipe->rx_active;
 
 	return active;
 }
@@ -71,6 +72,27 @@ static struct nrf24_pipe *nrf24_find_pipe_id(struct nrf24_device *device, int id
 	return ERR_PTR(-ENODEV);
 }
 
+static void nrf24_rx_active_timer_cb(struct timer_list *t)
+{
+	struct nrf24_pipe *pipe;
+	struct nrf24_device *device;
+
+	pipe = from_timer(pipe, t, rx_active_timer);
+
+	dev_dbg(pipe->dev, "Timer\n");
+	pipe->rx_active = false;
+
+	wake_up_interruptible(&pipe->read_wait_queue);
+
+	device = to_nrf24_device(pipe->dev->parent);
+
+
+	if (!nrf24_is_rx_active(device) && !kfifo_is_empty(&device->tx_fifo)) {
+		dev_dbg(&device->dev, "wake up TX...\n");
+		wake_up_interruptible(&device->tx_wait_queue);
+	}
+}
+
 static int nrf24_tx_thread(void *data)
 {
 	struct nrf24_device *device = data;
@@ -94,8 +116,6 @@ static int nrf24_tx_thread(void *data)
 
 		if (kthread_should_stop())
 			return 0;
-
-		device->tx_done = false;
 
 		//fifo lock is needed as write to tx fifo may be done by 6 pipes
 		mutex_lock(&device->tx_fifo_mutex);
@@ -169,30 +189,6 @@ static int nrf24_tx_thread(void *data)
 				goto next;
 		}
 
-		memset(pload, 0, PLOAD_MAX);
-		memcpy(pload, &size, sizeof(size));
-
-		//calculate payload length
-		pload_length = spl ? p->cfg.plw : sizeof(size);
-
-		//send size
-		nrf24_write_tx_pload(device->spi, pload, pload_length);
-		if (ret < 0) {
-			dev_dbg(&device->dev, "write TX PLOAD failed (%d)\n", ret);
-			goto next;
-		}
-
-		//enter TX MODE and start transmission
-		nrf24_ce_hi(device);
-
-		//wait for ACK
-		wait_event_interruptible(device->tx_done_wait_queue,
-					 (device->tx_done ||
-					 kthread_should_stop()));
-
-		if (kthread_should_stop())
-			goto abort;
-
 		sent = 0;
 
 		while (size > 0) {
@@ -212,6 +208,9 @@ static int nrf24_tx_thread(void *data)
 				goto next;
 			}
 
+			//enter TX MODE and start transmission
+			nrf24_ce_hi(device);
+
 			sent += pload_length;
 			size -= pload_length;
 
@@ -225,6 +224,10 @@ static int nrf24_tx_thread(void *data)
 			if (kthread_should_stop())
 				goto abort;
 		}
+
+		//signal write function that write operation was finished
+		device->write_done = true;
+		wake_up_interruptible(&device->write_wait_queue);
 next:
 		kfree(buf);
 
@@ -264,11 +267,12 @@ static int nrf24_rx_thread(void *data)
 	ssize_t length;
 	u8 pload[PLOAD_MAX];
 	struct nrf24_pipe *p;
+	u32 usecs;
 
 	while (true) {
 		wait_event_interruptible(device->rx_wait_queue,
-					 (!nrf24_is_rx_fifo_empty(device->spi) ||
-					 kthread_should_stop()));
+					 !nrf24_is_rx_fifo_empty(device->spi) ||
+					 kthread_should_stop());
 		if (kthread_should_stop())
 			return 0;
 
@@ -292,6 +296,14 @@ static int nrf24_rx_thread(void *data)
 		if (IS_ERR(p))
 			continue;
 
+		p->rx_active = true;
+		//keep rx active untli next time recevied for 1.5*Toa
+		usecs = 8192*(1 + device->cfg.address_width + PLOAD_MAX + (device->cfg.crc - 1)) + 9;
+		usecs /= device->cfg.data_rate;
+		usecs += (usecs / 2);
+		dev_dbg(p->dev, "rx_active_timer = %u us\n", usecs);
+		mod_timer(&p->rx_active_timer, jiffies + usecs_to_jiffies(250));
+
 		memset(pload, 0, PLOAD_MAX);
 		length = nrf24_read_rx_pload(device->spi, pload);
 		if (length < 0) {
@@ -303,26 +315,8 @@ static int nrf24_rx_thread(void *data)
 		}
 
 		dev_dbg(p->dev, "rx %zd bytes\n", length);
-		if (p->rx_size <= 0) {
-			memcpy(&p->rx_size, pload, sizeof(p->rx_size));
-			dev_dbg(p->dev, "RX active\n");
-		} else {
-			length = p->rx_size < p->cfg.plw ? p->rx_size : length;
+		kfifo_in(&p->rx_fifo, pload, length);
 
-			p->rx_size -= kfifo_in(&p->rx_fifo, pload, length);
-
-			wake_up_interruptible(&p->read_wait_queue);
-
-			if (p->rx_size <= 0) {
-				dev_dbg(p->dev, "RX done\n");
-			}
-		}
-
-		//start tx if all rx done and tx requested during active rx
-		if (!nrf24_is_rx_active(device) && !kfifo_is_empty(&device->tx_fifo)) {
-			dev_dbg(&device->dev, "wake up TX...\n");
-			wake_up_interruptible(&device->tx_wait_queue);
-		}
 	}
 }
 
@@ -385,11 +379,12 @@ static ssize_t nrf24_read(struct file *filp,
 	p = filp->private_data;
 
 	if (kfifo_is_empty(&p->rx_fifo)) {
-		if (filp->f_flags & O_NONBLOCK)
+		if (filp->f_flags & O_NONBLOCK) {
 			return -EAGAIN;
-		else
+		} else {
 			wait_event_interruptible(p->read_wait_queue,
-                                                 !kfifo_is_empty(&p->rx_fifo));
+						 !kfifo_is_empty(&p->rx_fifo));
+		}
 	}
 
 	n = kfifo_to_user(&p->rx_fifo, buf, size, &copied);
@@ -434,6 +429,10 @@ static ssize_t nrf24_write(struct file *filp,
 
 	wake_up_interruptible(&device->tx_wait_queue);
 
+	device->write_done = false;
+
+	wait_event_interruptible(device->write_wait_queue, device->write_done);
+
 	return copied;
 err_kfifo_reset:
 	kfifo_reset(&device->tx_fifo);
@@ -464,9 +463,7 @@ static int nrf24_release(struct inode *inode, struct file *filp)
 
 	return 0;
 }
-
-static unsigned int nrf24_poll(struct file *filp,
-			       struct poll_table_struct *wait)
+static __poll_t nrf24_poll(struct file *filp, struct poll_table_struct *wait)
 {
 	struct nrf24_device *device;
 	struct nrf24_pipe *p;
@@ -478,7 +475,7 @@ static unsigned int nrf24_poll(struct file *filp,
 	poll_wait(filp, &p->read_wait_queue, wait);
 	if (!kfifo_is_empty(&p->rx_fifo)) {
 		dev_dbg(p->dev, "%s: got data!\n", __func__);
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 	}
 	dev_dbg(p->dev, "%s: no data!\n", __func__);
 	return 0;
@@ -530,6 +527,7 @@ static struct nrf24_pipe *nrf24_create_pipe(struct nrf24_device *device, int id)
 
 	INIT_KFIFO(p->rx_fifo);
 	init_waitqueue_head(&p->read_wait_queue);
+	timer_setup(&p->rx_active_timer, nrf24_rx_active_timer_cb, 0);
 
 	p->dev = device_create_with_groups(nrf24_class,
 					   &device->dev,
@@ -662,6 +660,7 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 
 	init_waitqueue_head(&device->tx_wait_queue);
 	init_waitqueue_head(&device->tx_done_wait_queue);
+	init_waitqueue_head(&device->write_wait_queue);
 	init_waitqueue_head(&device->rx_wait_queue);
 
 	INIT_WORK(&device->isr_work, nrf24_isr_work_handler);
@@ -705,30 +704,50 @@ static int nrf24_hal_init(struct nrf24_device *device)
 	ret = nrf24_flush_fifo(spi);
 	if (ret < 0)
 		return ret;
+
 	ret = nrf24_open_pipe(spi, NRF24_PIPE_ALL);
 	if (ret < 0)
 		return ret;
+
 	ret = nrf24_lock_unlock(spi);
 	if (ret < 0)
 		return ret;
+
 	ret = nrf24_set_mode(spi, NRF24_MODE_RX);
 	if (ret < 0)
 		return ret;
+
+	device->cfg.crc = NRF24_CRC_16BIT;
 	ret = nrf24_set_crc_mode(spi, NRF24_CRC_16BIT);
 	if (ret < 0)
 		return ret;
+
+	device->cfg.retr_count = 15;
 	ret = nrf24_set_auto_retr_count(spi, 15);
 	if (ret < 0)
 		return ret;
+
+	device->cfg.retr_delay = 4000;
 	ret = nrf24_set_auto_retr_delay(spi, 4000);
 	if (ret < 0)
 		return ret;
+
+	device->cfg.rf_power = NRF24_POWER_0DBM;
 	ret = nrf24_set_rf_power(spi, NRF24_POWER_0DBM);
 	if (ret < 0)
 		return ret;
+
+	device->cfg.data_rate = NRF24_DATARATE_2MBPS;
 	ret = nrf24_set_datarate(spi, NRF24_DATARATE_2MBPS);
 	if (ret < 0)
 		return ret;
+
+	ret = nrf24_get_address_width(spi);
+	if (ret < 0)
+		return ret;
+
+	device->cfg.address_width = ret;
+
 	ret = nrf24_power_up(spi);
 	if (ret < 0)
 		return ret;

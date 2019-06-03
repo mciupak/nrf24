@@ -517,7 +517,7 @@ static ssize_t data_rate_store(struct device *dev,
 			       size_t count)
 {
 	int ret;
-	u8 new;
+	u16 new;
 	u16 tmp;
 	struct nrf24_device *device;
 
