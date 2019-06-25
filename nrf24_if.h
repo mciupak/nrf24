@@ -57,6 +57,7 @@ struct nrf24_device {
 	spinlock_t		lock;
 
 	struct work_struct	isr_work;
+	struct work_struct	rx_work;
 
 	/* tx */
 	STRUCT_KFIFO_REC_2(FIFO_SIZE) tx_fifo;
@@ -68,8 +69,6 @@ struct nrf24_device {
 	bool			tx_failed;
 
 	/* rx */
-	struct task_struct	*rx_task_struct;
-	wait_queue_head_t	rx_wait_queue;
 	struct timer_list	rx_active_timer;
 	bool			rx_active;
 

@@ -253,63 +253,45 @@ abort:
 	return 0;
 }
 
-static int nrf24_rx_thread(void *data)
+static void nrf24_rx_work_handler(struct work_struct *work)
 {
-	struct nrf24_device *device = data;
+	struct nrf24_device *device;
 	ssize_t pipe;
 	ssize_t length;
 	u8 pload[PLOAD_MAX];
 	struct nrf24_pipe *p;
-	u32 usecs;
 
-	while (true) {
-		wait_event_interruptible(device->rx_wait_queue,
-					 !nrf24_is_rx_fifo_empty(device->spi) ||
-					 kthread_should_stop());
-		if (kthread_should_stop())
-			return 0;
+	device = container_of(work, struct nrf24_device, rx_work);
+
+	while (!nrf24_is_rx_fifo_empty(device->spi)) {
 
 		pipe = nrf24_get_rx_data_source(device->spi);
-		if (pipe < 0) {
+		if (pipe < 0 || pipe > NRF24_PIPE5) {
 			dev_dbg(&device->dev,
 				"%s: get pipe failed (err: %zd)\n",
 				__func__,
 				pipe);
-			continue;
-		}
-
-		if (pipe > NRF24_PIPE5) {
-			dev_dbg(&device->dev,
-				"%s: RX FIFO is empty!\n",
-				__func__);
-			continue;
+			return;
 		}
 
 		p = nrf24_pipe_by_id(device, pipe);
 		if (IS_ERR(p))
-			continue;
+			return;
 
-		//keep rx active untli next time recevied for 1.5*Toa
-		usecs = 8192 * (1 + device->cfg.address_width + PLOAD_MAX + (device->cfg.crc - 1)) + 9;
-		usecs /= device->cfg.data_rate;
-		usecs += (usecs / 2);
-		dev_dbg(p->dev, "rx_active_timer = %u us\n", usecs);
-		mod_timer(&device->rx_active_timer,
-			  jiffies + usecs_to_jiffies(usecs));
 
 		memset(pload, 0, PLOAD_MAX);
 		length = nrf24_read_rx_pload(device->spi, pload);
-		if (length < 0) {
+		if (length < 0 || length > PLOAD_MAX) {
 			dev_dbg(p->dev,
 				"%s: could not read pload (err = %zd)\n",
 				__func__,
 				length);
-			continue;
+			return;
 		}
 
 		dev_dbg(p->dev, "rx %zd bytes\n", length);
 		if (mutex_lock_interruptible(&p->rx_fifo_mutex))
-			continue;
+			return;
 		kfifo_in(&p->rx_fifo, pload, length);
 		mutex_unlock(&p->rx_fifo_mutex);
 
@@ -321,6 +303,7 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 {
 	struct nrf24_device *device;
 	ssize_t status;
+	u32 usecs;
 
 	device = container_of(work, struct nrf24_device, isr_work);
 
@@ -331,8 +314,15 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 	if (status & RX_DR) {
 		dev_dbg(&device->dev, "%s: RX_DR\n", __func__);
 		device->rx_active = true;
+		//keep rx active untli next time recevied for 1.5*Toa
+		usecs = 8192 * (1 + device->cfg.address_width + PLOAD_MAX + (device->cfg.crc - 1)) + 9;
+		usecs /= device->cfg.data_rate;
+		usecs += (usecs / 2);
+		dev_dbg(&device->dev, "rx_active_timer = %u us\n", usecs);
+		mod_timer(&device->rx_active_timer,
+			  jiffies + usecs_to_jiffies(usecs));
 		nrf24_clear_irq(device->spi, RX_DR);
-		wake_up_interruptible(&device->rx_wait_queue);
+		schedule_work(&device->rx_work);
 	}
 
 	if (status & TX_DS) {
@@ -677,9 +667,9 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 
 	init_waitqueue_head(&device->tx_wait_queue);
 	init_waitqueue_head(&device->tx_done_wait_queue);
-	init_waitqueue_head(&device->rx_wait_queue);
 
 	INIT_WORK(&device->isr_work, nrf24_isr_work_handler);
+	INIT_WORK(&device->rx_work, nrf24_rx_work_handler);
 	INIT_KFIFO(device->tx_fifo);
 	spin_lock_init(&device->lock);
 	mutex_init(&device->tx_fifo_mutex);
@@ -816,30 +806,19 @@ static int nrf24_probe(struct spi_device *spi)
 	if (ret < 0)
 		goto err_devs_destroy;
 
-	device->rx_task_struct = kthread_run(nrf24_rx_thread,
-					     device,
-					     "nrf%d_rx_thread",
-					     device->id);
-	if (IS_ERR(device->rx_task_struct)) {
-		dev_err(&device->dev, "start of tx thread failed\n");
-		goto err_devs_destroy;
-	}
-
 	device->tx_task_struct = kthread_run(nrf24_tx_thread,
 					     device,
 					     "nrf%d_tx_thread",
 					     device->id);
 	if (IS_ERR(device->tx_task_struct)) {
 		dev_err(&device->dev, "start of tx thread failed\n");
-		goto err_kthread_stop;
+		goto err_devs_destroy;
 	}
 
 	spi_set_drvdata(spi, device);
 
 	return 0;
 
-err_kthread_stop:
-	kthread_stop(device->rx_task_struct);
 err_devs_destroy:
 	nrf24_destroy_devices(device);
 	nrf24_gpio_free(device);
@@ -855,7 +834,6 @@ static int nrf24_remove(struct spi_device *spi)
 	nrf24_gpio_free(device);
 
 	kthread_stop(device->tx_task_struct);
-	kthread_stop(device->rx_task_struct);
 
 	nrf24_destroy_devices(device);
 

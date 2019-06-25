@@ -96,8 +96,10 @@ static ssize_t nrf24_read_multireg(struct spi_device *spi, u8 reg, u8 *buf)
 		break;
 	case NRF24_RX_PLOAD:
 		ret = nrf24_get_rx_data_source(spi);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_dbg(&spi->dev, "%s: invalid rx data source (%zd)\n", __func__, ret);
 			return ret;
+		}
 
 		if (ret < NRF24_TX_PLOAD) {
 			length = nrf24_get_rx_pl_w(spi);
@@ -111,7 +113,9 @@ static ssize_t nrf24_read_multireg(struct spi_device *spi, u8 reg, u8 *buf)
 		return -EINVAL;
 	}
 
-	if (length > 0) {
+	if (length > 0 && length <= PLOAD_MAX) {
+		dev_dbg(&spi->dev, "%s: length = %zd\n", __func__, length);
+
 		ret = spi_write_then_read(spi,
 					  &reg_addr,
 					  1,
