@@ -41,6 +41,8 @@ ssize_t nrf24_get_rx_pload_width(struct spi_device *spi, u8 pipe);
 ssize_t nrf24_soft_reset(struct spi_device *spi);
 ssize_t nrf24_clear_irq(struct spi_device *spi, u8 irq);
 ssize_t nrf24_flush_fifo(struct spi_device *spi);
+ssize_t nrf24_flush_rx_fifo(struct spi_device *spi);
+ssize_t nrf24_flush_tx_fifo(struct spi_device *spi);
 ssize_t nrf24_get_rx_pl_w(struct spi_device *spi);
 ssize_t nrf24_print_status(struct spi_device *spi);
 ssize_t nrf24_get_auto_ack(struct spi_device *spi, u8 pipe);

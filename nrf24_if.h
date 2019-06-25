@@ -24,12 +24,14 @@ struct nrf24_pipe {
 	struct nrf24_pipe_cfg	cfg;
 
 	DECLARE_KFIFO(rx_fifo, u8, FIFO_SIZE);
+	struct mutex		rx_fifo_mutex;
 	wait_queue_head_t	read_wait_queue;
-	u8			rx_active;
+	wait_queue_head_t	write_wait_queue;
 
 	struct list_head	list;
 
-	struct timer_list	rx_active_timer;
+	u32			sent;
+	bool			write_done;
 };
 
 struct nrf24_device_cfg {
@@ -62,17 +64,18 @@ struct nrf24_device {
 	struct task_struct	*tx_task_struct;
 	wait_queue_head_t	tx_wait_queue;
 	wait_queue_head_t	tx_done_wait_queue;
-	wait_queue_head_t	write_wait_queue;
-	u8			tx_done;
-	u8			write_done;
-	struct timer_list	tx_active_timer;
+	bool			tx_done;
+	bool			tx_failed;
 
 	/* rx */
 	struct task_struct	*rx_task_struct;
 	wait_queue_head_t	rx_wait_queue;
+	struct timer_list	rx_active_timer;
+	bool			rx_active;
 
 };
 
 #define to_nrf24_device(device)	container_of(device, struct nrf24_device, dev)
+
 
 #endif /* NRF24_IF_H */

@@ -673,14 +673,24 @@ ssize_t nrf24_clear_irq(struct spi_device *spi, u8 irq)
 	return nrf24_write_reg(spi, STATUS, irq);
 }
 
+ssize_t nrf24_flush_rx_fifo(struct spi_device *spi)
+{
+	return nrf24_write_reg(spi, FLUSH_RX, 0);
+}
+
+ssize_t nrf24_flush_tx_fifo(struct spi_device *spi)
+{
+	return nrf24_write_reg(spi, FLUSH_TX, 0);
+}
+
 ssize_t nrf24_flush_fifo(struct spi_device *spi)
 {
 	ssize_t ret;
 
-	ret = nrf24_write_reg(spi, FLUSH_RX, 0);
+	ret = nrf24_flush_rx_fifo(spi);
 	if (ret < 0)
 		return ret;
-	return nrf24_write_reg(spi, FLUSH_TX, 0);
+	return nrf24_flush_tx_fifo(spi);
 }
 
 ssize_t nrf24_print_status(struct spi_device *spi)
