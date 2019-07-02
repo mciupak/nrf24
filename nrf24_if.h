@@ -8,7 +8,10 @@
 #ifndef NRF24_IF_H
 #define NRF24_IF_H
 
+#include "nRF24L01.h"
+
 #define FIFO_SIZE			65536
+
 
 struct nrf24_pipe_cfg {
 	u64			address;
@@ -43,6 +46,12 @@ struct nrf24_device_cfg {
 	u8			address_width;
 };
 
+struct nrf24_tx_data {
+	struct nrf24_pipe	*pipe;
+	u8			size;
+	u8			pload[PLOAD_MAX];
+};
+
 struct nrf24_device {
 	u32			id;
 	struct device		dev;
@@ -60,7 +69,7 @@ struct nrf24_device {
 	struct work_struct	rx_work;
 
 	/* tx */
-	STRUCT_KFIFO_REC_2(FIFO_SIZE) tx_fifo;
+	STRUCT_KFIFO_REC_1(FIFO_SIZE) tx_fifo;
 	struct mutex		tx_fifo_mutex;
 	struct task_struct	*tx_task_struct;
 	wait_queue_head_t	tx_wait_queue;
