@@ -541,6 +541,11 @@ ssize_t nrf24_set_rf_channel(struct spi_device *spi, u8 channel)
 	return nrf24_write_reg(spi, RF_CH, channel);
 }
 
+ssize_t nrf24_get_rf_channel(struct spi_device *spi)
+{
+	return nrf24_read_reg(spi, RF_CH);
+}
+
 ssize_t nrf24_power_up(struct spi_device *spi)
 {
 	ssize_t config;
@@ -596,8 +601,8 @@ ssize_t nrf24_get_rx_pl_w(struct spi_device *spi)
 ssize_t nrf24_soft_reset(struct spi_device *spi)
 {
 	ssize_t ret;
-	u8 addr0[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
-	u8 addr1[5] = {0xC2, 0xC2, 0xC2, 0xC2, 0xC2};
+	u8 addr0[5] = {0xf0, 0xf0, 0xf0, 0xf0, 0xe1};
+	u8 addr1[5] = {0xf0, 0xf0, 0xf0, 0xf0, 0xe1};
 
 	ret = nrf24_write_reg(spi, CONFIG, 0x08);
 	if (ret < 0)

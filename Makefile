@@ -1,5 +1,5 @@
-export ARCH ?= arm
-export CROSS_COMPILE ?= arm-linux-gnueabihf-
+#export ARCH ?= arm
+#export CROSS_COMPILE ?= arm-linux-gnueabihf-
 
 obj-m += nrf24.o
 
@@ -9,7 +9,7 @@ CFLAGS_nrf24_if.o := -DDEBUG
 CFLAGS_nrf24_hal.o := -DDEBUG
 CFLAGS_nrf24_sysfs.o := -DDEBUG
 
-KERNEL_DIR ?= ../linux
+KERNEL_DIR ?= /lib/modules/`uname -r`/build
 
 all:
 	make -C $(KERNEL_DIR) M=$(PWD) modules
