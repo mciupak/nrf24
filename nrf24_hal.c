@@ -619,7 +619,7 @@ ssize_t nrf24_soft_reset(struct spi_device *spi)
 	ret = nrf24_write_reg(spi, SETUP_RETR, 0x03);
 	if (ret < 0)
 		return ret;
-	ret = nrf24_write_reg(spi, RF_CH, 0x02);
+	ret = nrf24_write_reg(spi, RF_CH, 0x46);
 	if (ret < 0)
 		return ret;
 	ret = nrf24_write_reg(spi, RF_SETUP, 0x07);
