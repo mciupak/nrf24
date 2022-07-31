@@ -83,6 +83,7 @@ struct nrf24_device {
 
 };
 
+
 #define to_nrf24_device(device)	container_of(device, struct nrf24_device, dev)
 
 

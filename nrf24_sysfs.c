@@ -100,6 +100,23 @@ static ssize_t chan_store(struct device *dev,
     return count;
 }
 
+static ssize_t reset_store(struct device *dev,
+			 struct device_attribute *attr,
+			 const char *buf,
+			 size_t count)
+{
+    struct nrf24_device *device = to_nrf24_device(dev->parent);
+ 
+
+	nrf24_soft_reset(device->spi);
+	
+	
+	
+
+
+    return count;
+}
+
 static ssize_t plw_show(struct device *dev,
 			struct device_attribute *attr,
 			char *buf)
@@ -215,12 +232,14 @@ static ssize_t address_store(struct device *dev,
 }
 
 static DEVICE_ATTR_RW(ack);
+static DEVICE_ATTR_WO(reset);
 static DEVICE_ATTR_RW(chan);
 static DEVICE_ATTR_RW(plw);
 static DEVICE_ATTR_RW(address);
 
 struct attribute *nrf24_pipe_attrs[] = {
 	&dev_attr_ack.attr,
+	&dev_attr_reset.attr,
 	&dev_attr_chan.attr,
 	&dev_attr_plw.attr,
 	&dev_attr_address.attr,

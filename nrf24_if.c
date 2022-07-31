@@ -778,6 +778,8 @@ static int nrf24_remove(struct spi_device *spi)
 {
 	struct nrf24_device *device = spi_get_drvdata(spi);
 
+    dev_info(&device->dev, "Nrf being removed\n");
+    
 	nrf24_gpio_free(device);
 
 	kthread_stop(device->tx_task_struct);
@@ -785,7 +787,9 @@ static int nrf24_remove(struct spi_device *spi)
 	nrf24_destroy_devices(device);
 
 	device_unregister(&device->dev);
-
+    
+    dev_info(&device->dev, "Nrf successfully removed\n");
+    
 	return 0;
 }
 
