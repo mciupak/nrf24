@@ -24,6 +24,7 @@
 #include <linux/poll.h>
 #include <linux/list.h>
 #include <linux/timer.h>
+#include <linux/gpio.h>
 
 #include "nrf24_if.h"
 #include "nrf24_sysfs.h"
@@ -41,12 +42,16 @@ ATTRIBUTE_GROUPS(nrf24);
 
 static void nrf24_ce_hi(struct nrf24_device *device)
 {
-	gpiod_set_value(device->ce, 1);
+
+	gpiod_set_value_cansleep(device->ce, 1);
+
 }
 
 static void nrf24_ce_lo(struct nrf24_device *device)
 {
-	gpiod_set_value(device->ce, 0);
+
+	gpiod_set_value_cansleep(device->ce, 0);
+
 }
 
 static struct nrf24_pipe *nrf24_pipe_by_id(struct nrf24_device *device, int id)
@@ -289,14 +294,13 @@ static void nrf24_isr_work_handler(struct work_struct *work)
 
 static irqreturn_t nrf24_isr(int irq, void *dev_id)
 {
-	unsigned long flags;
 	struct nrf24_device *device = dev_id;
 
-	spin_lock_irqsave(&device->lock, flags);
+	mutex_lock(&device->lock);
 
 	schedule_work(&device->isr_work);
 
-	spin_unlock_irqrestore(&device->lock, flags);
+	mutex_unlock(&device->lock);
 
 	return IRQ_HANDLED;
 }
@@ -312,6 +316,7 @@ static ssize_t nrf24_read(struct file *filp,
 	int ret;
 
 	p = filp->private_data;
+
 
 	if (kfifo_is_empty(&p->rx_fifo)) {
 		if (filp->f_flags & O_NONBLOCK)
@@ -340,7 +345,7 @@ static ssize_t nrf24_write(struct file *filp,
 	struct nrf24_pipe *p;
 	struct nrf24_tx_data data;
 	ssize_t copied = 0;
-
+	int ret;
 	p = filp->private_data;
 	data.pipe = p;
 	device = to_nrf24_device(p->dev->parent);
@@ -366,7 +371,9 @@ static ssize_t nrf24_write(struct file *filp,
 			wake_up_interruptible(&device->tx_wait_queue);
 
 			p->write_done = false;
-			wait_event_interruptible(p->write_wait_queue, p->write_done);
+			ret = wait_event_interruptible(p->write_wait_queue, p->write_done);
+			if (ret < 0) 
+			    return 1;
 			copied += p->sent;
 		}
 		size -= data.size;
@@ -545,11 +552,13 @@ static int nrf24_gpio_setup(struct nrf24_device *device)
 
 	nrf24_ce_lo(device);
 
-	ret = request_irq(device->spi->irq,
+    ret = request_threaded_irq(device->spi->irq,
 			  nrf24_isr,
 			  0,
+			  IRQF_TRIGGER_FALLING,
 			  dev_name(&device->dev),
 			  device);
+			  
 	if (ret < 0) {
 		gpiod_put(device->ce);
 		return ret;
@@ -609,7 +618,7 @@ static struct nrf24_device *nrf24_dev_init(struct spi_device *spi)
 	INIT_WORK(&device->isr_work, nrf24_isr_work_handler);
 	INIT_WORK(&device->rx_work, nrf24_rx_work_handler);
 	INIT_KFIFO(device->tx_fifo);
-	spin_lock_init(&device->lock);
+	mutex_init(&device->lock);
 	mutex_init(&device->tx_fifo_mutex);
 
 	INIT_LIST_HEAD(&device->pipes);
@@ -769,6 +778,8 @@ static int nrf24_remove(struct spi_device *spi)
 {
 	struct nrf24_device *device = spi_get_drvdata(spi);
 
+    dev_info(&device->dev, "Nrf being removed\n");
+    
 	nrf24_gpio_free(device);
 
 	kthread_stop(device->tx_task_struct);
@@ -776,7 +787,9 @@ static int nrf24_remove(struct spi_device *spi)
 	nrf24_destroy_devices(device);
 
 	device_unregister(&device->dev);
-
+    
+    dev_info(&device->dev, "Nrf successfully removed\n");
+    
 	return 0;
 }
 
@@ -787,12 +800,19 @@ static const struct of_device_id nrf24_dt_ids[] = {
 
 MODULE_DEVICE_TABLE(of, nrf24_dt_ids);
 
+static const struct spi_device_id nrf24_spi_ids[] = {
+	{ .name = "nrf24", },
+	{},
+};
+MODULE_DEVICE_TABLE(spi, nrf24_spi_ids);
+
 static  struct spi_driver nrf24_spi_driver = {
 	.driver = {
 		.name = "nrf24",
 		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(nrf24_dt_ids),
 	},
+	.id_table = nrf24_spi_ids,
 	.probe = nrf24_probe,
 	.remove = nrf24_remove,
 };

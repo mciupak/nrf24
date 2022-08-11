@@ -31,6 +31,7 @@ ssize_t nrf24_set_rf_power(struct spi_device *spi, enum nrf24_rf_power rf_pwr);
 ssize_t nrf24_get_rf_power(struct spi_device *spi);
 ssize_t nrf24_set_rx_pload_width(struct spi_device *spi, u8 pipe_no, u8 plw);
 ssize_t nrf24_set_rf_channel(struct spi_device *spi, u8 channel);
+ssize_t nrf24_get_rf_channel(struct spi_device *spi);
 ssize_t nrf24_write_tx_pload(struct spi_device *dev, u8 *buf, u8 length);
 ssize_t nrf24_write_tx_pload_noack(struct spi_device *dev, u8 *buf, u8 length);
 ssize_t nrf24_read_rx_pload(struct spi_device *spi, u8 *buf);

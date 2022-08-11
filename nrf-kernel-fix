@@ -1,0 +1,56 @@
+#!/bin/bash
+echo "nrf0 tx address b4 "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/tx_address
+echo 0xE1F0F0F0F0 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/tx_address
+echo "nrf0 tx address after "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/tx_address
+echo "nrf0.0 address b4 "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/address
+echo 0xE1F0F0F0F0 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/address
+echo "nrf0.0 address after "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/address
+echo "nrf0.1 address b4 "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/address
+echo 0xE1F0F0F0F0 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/address
+echo "nrf0.1 address after "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/address
+echo "nrf rf chan b4 "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/chan
+echo 70 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/chan
+echo "nrf rf chan after "
+sudo cat /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/chan
+#echo 0xE1F0F0F0F0 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/tx_address
+#echo 0xE1F0F0F0F0 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/address
+#echo 70 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/chan
+
+#echo 0xF0F0F0F0E1 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/address
+#echo 70 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/chan
+#echo 0xE1F0F0F0F0 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/address
+#echo 70 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/chan
+
+#echo 0xF0F0F0F0E1 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/tx_address
+#echo 0xF0F0F0F0E1 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/address
+#echo 70 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.0/chan
+
+#echo 0xF0F0F0F0E1 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/address
+#echo 70 > /sys/module/nrf24/drivers/spi\:nrf24/spi16.0/nrf24/nrf0/nrf0.1/chan
+echo "nrf0 tx_address  "
+sudo cat /sys/class/nrf24/nrf0/tx_address
+echo -e "above line should read 0xE1F0F0F0F0 \n"
+echo "nrf0.0 address  "
+sudo cat /sys/class/nrf24/nrf0/nrf0.0/address
+echo -e "above line should read 0xE1F0F0F0F0 \n"
+echo "nrf0.1 address  "
+sudo cat /sys/class/nrf24/nrf0/nrf0.1/address
+echo -e "above line should read 0xE1F0F0F0F0 \n"
+
+echo 'on' > '/sys/bus/usb/devices/usb3/power/control'
+echo 'on' > '/sys/bus/usb/devices/usb2/power/control'
+echo 'on' > '/sys/bus/usb/devices/usb1/power/control'
+echo 'on' > '/sys/bus/usb/devices/4-1/power/control'
+echo 'on' > '/sys/bus/usb/devices/1-1.4/power/control'
+echo 'on' > '/sys/bus/usb/devices/usb4/power/control'
+echo 'on' > '/sys/bus/usb/devices/3-1/power/control'
+
+chmod ou+wr /dev/nrf*
+

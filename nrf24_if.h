@@ -63,7 +63,7 @@ struct nrf24_device {
 	struct nrf24_device_cfg	cfg;
 
 	/* for irqsave */
-	spinlock_t		lock;
+    struct mutex		lock;
 
 	struct work_struct	isr_work;
 	struct work_struct	rx_work;
@@ -82,6 +82,7 @@ struct nrf24_device {
 	bool			rx_active;
 
 };
+
 
 #define to_nrf24_device(device)	container_of(device, struct nrf24_device, dev)
 
